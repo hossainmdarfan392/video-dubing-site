@@ -1,0 +1,1222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Aurora Dub — Premium AI Video Dubbing</title>
+<style>
+/* ============================================================
+   Design tokens
+   ============================================================ */
+:root{
+  --sky:#00a2ff;
+  --sky-soft:#7cd1ff;
+  --sky-deep:#0077cc;
+  --ink:#0b1524;
+  --ink-soft:#5a6b82;
+  --line:#e7eef7;
+  --bg:#ffffff;
+  --panel:#ffffff;
+  --panel-glass:rgba(255,255,255,0.62);
+  --shadow:0 18px 50px -20px rgba(0,110,190,0.28);
+  --shadow-sm:0 8px 24px -12px rgba(11,21,36,0.18);
+  --radius:20px;
+  --radius-sm:12px;
+  --term-bg:#0a1220;
+  --term-line:#12203a;
+  --ok:#2fd07a;
+  --warn:#ffcf5c;
+  --err:#ff6b6b;
+}
+
+/* Rotatable angle for the RGB border */
+@property --rgb-angle{
+  syntax:'<angle>';
+  initial-value:0deg;
+  inherits:false;
+}
+
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  color:var(--ink);
+  background:
+    radial-gradient(1100px 620px at 12% -8%, rgba(124,209,255,0.20), transparent 60%),
+    radial-gradient(1000px 620px at 108% 4%, rgba(0,162,255,0.14), transparent 58%),
+    #ffffff;
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+  line-height:1.5;
+}
+
+/* ============================================================
+   Layout
+   ============================================================ */
+.shell{max-width:1180px;margin:0 auto;padding:34px 26px 70px;}
+
+.topbar{
+  display:flex;align-items:center;justify-content:space-between;
+  gap:18px;margin-bottom:34px;
+}
+.brand{display:flex;align-items:center;gap:14px;}
+.brand-mark{
+  width:46px;height:46px;border-radius:14px;
+  display:grid;place-items:center;
+  background:linear-gradient(135deg,var(--sky),var(--sky-soft));
+  box-shadow:0 12px 26px -10px rgba(0,162,255,0.65);
+  color:#fff;
+}
+.brand-name{font-size:20px;font-weight:800;letter-spacing:-0.02em;}
+.brand-sub{font-size:12.5px;color:var(--ink-soft);font-weight:500;margin-top:-2px;}
+
+.status-pill{
+  display:inline-flex;align-items:center;gap:9px;
+  padding:9px 15px;border-radius:999px;
+  background:var(--panel-glass);
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border:1px solid var(--line);
+  font-size:13px;font-weight:600;color:var(--ink-soft);
+  box-shadow:var(--shadow-sm);
+}
+.status-dot{width:9px;height:9px;border-radius:50%;background:var(--sky);box-shadow:0 0 0 4px rgba(0,162,255,0.16);}
+
+.hero{margin-bottom:30px;}
+.hero h1{
+  font-size:clamp(28px,4vw,44px);line-height:1.08;
+  letter-spacing:-0.03em;font-weight:850;margin:0 0 10px;
+}
+.hero h1 .grad{
+  background:linear-gradient(120deg,var(--sky-deep),var(--sky) 45%,var(--sky-soft));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.hero p{max-width:640px;color:var(--ink-soft);font-size:15.5px;margin:0;}
+
+/* ============================================================
+   Cards / grid
+   ============================================================ */
+.grid{
+  display:grid;
+  grid-template-columns:1.05fr 0.95fr;
+  gap:24px;align-items:start;
+}
+@media (max-width:940px){.grid{grid-template-columns:1fr;}}
+
+.card{
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  box-shadow:var(--shadow);
+  padding:24px;
+}
+.card.glass{
+  background:var(--panel-glass);
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+}
+.card-title{display:flex;align-items:center;gap:10px;font-weight:750;font-size:15px;margin-bottom:18px;}
+.card-title svg{color:var(--sky);}
+
+/* ============================================================
+   RGB Glow Dropbox
+   ============================================================ */
+.drop-wrap{position:relative;border-radius:22px;padding:3px;isolation:isolate;}
+.drop-wrap::before{
+  content:"";position:absolute;inset:0;border-radius:22px;padding:3px;
+  background:conic-gradient(from var(--rgb-angle),
+     #ff3d81,#ff9d3d,#ffe14d,#4dff8f,#00a2ff,#7c6bff,#ff3d81);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;
+  animation:spin 6s linear infinite;
+  opacity:0.9;transition:opacity .3s ease;
+  z-index:-1;
+}
+@keyframes spin{to{--rgb-angle:360deg;}}
+
+.dropbox{
+  position:relative;border-radius:19px;
+  background:#ffffff;
+  padding:40px 26px;text-align:center;cursor:pointer;
+  transition:background .25s ease,box-shadow .25s ease,transform .12s ease;
+  display:flex;flex-direction:column;align-items:center;gap:12px;
+}
+.dropbox:hover{transform:translateY(-1px);}
+.drop-icon{
+  width:62px;height:62px;border-radius:50%;
+  display:grid;place-items:center;color:var(--sky);
+  background:radial-gradient(circle at 50% 40%,rgba(0,162,255,0.14),rgba(124,209,255,0.06));
+  transition:transform .25s ease,color .25s ease;
+}
+.dropbox h3{margin:2px 0 0;font-size:16.5px;font-weight:750;}
+.dropbox p{margin:0;color:var(--ink-soft);font-size:13.5px;}
+.dropbox .hint{font-size:12px;color:#98a7bd;}
+
+/* Deep sky-blue solid glow while dragging */
+.drop-wrap.dragging::before{opacity:0;}
+.drop-wrap.dragging .dropbox{
+  background:linear-gradient(180deg,#eaf7ff,#dcf0ff);
+  box-shadow:0 0 0 3px var(--sky),0 0 46px -4px rgba(0,162,255,0.85),inset 0 0 40px rgba(0,162,255,0.20);
+}
+.drop-wrap.dragging .drop-icon{transform:scale(1.08);color:var(--sky-deep);}
+.drop-wrap.has-file::before{
+  background:conic-gradient(from var(--rgb-angle),var(--sky),var(--sky-soft),var(--sky-deep),var(--sky));
+}
+
+.file-chip{
+  margin-top:16px;display:none;align-items:center;gap:12px;
+  padding:12px 14px;border-radius:var(--radius-sm);
+  background:#f4fbff;border:1px solid #d5edff;
+  text-align:left;
+}
+.file-chip.show{display:flex;}
+.file-chip .fmeta{min-width:0;flex:1;}
+.file-chip .fname{font-weight:650;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.file-chip .fsize{font-size:12px;color:var(--ink-soft);}
+.file-chip .fico{color:var(--sky);flex-shrink:0;}
+.file-chip .fclear{margin-left:auto;background:none;border:none;cursor:pointer;color:var(--ink-soft);padding:6px;border-radius:8px;display:grid;place-items:center;}
+.file-chip .fclear:hover{background:#e3f3ff;color:var(--err);}
+
+/* ============================================================
+   Form controls
+   ============================================================ */
+.field{margin-bottom:16px;}
+.field label{display:block;font-size:12.5px;font-weight:650;color:var(--ink-soft);margin-bottom:7px;letter-spacing:.01em;}
+.control{
+  position:relative;
+}
+.control select,.control input[type="text"]{
+  width:100%;appearance:none;-webkit-appearance:none;
+  padding:12px 40px 12px 14px;border-radius:var(--radius-sm);
+  border:1px solid var(--line);background:#fbfdff;
+  font-size:14.5px;font-family:inherit;color:var(--ink);font-weight:550;
+  transition:border-color .2s ease,box-shadow .2s ease,background .2s ease;
+}
+.control select:focus,.control input[type="text"]:focus{
+  outline:none;border-color:var(--sky);background:#fff;
+  box-shadow:0 0 0 4px rgba(0,162,255,0.14);
+}
+.control .chev{position:absolute;right:13px;top:50%;transform:translateY(-50%);color:var(--ink-soft);pointer-events:none;}
+
+/* Ending CTA toggle + text */
+.toggle-line{
+  display:flex;align-items:center;justify-content:space-between;gap:14px;
+  padding:12px 14px;border-radius:var(--radius-sm);
+  background:#f7fbff;border:1px solid #e3f0fb;
+}
+.toggle-line .tl-txt{display:flex;flex-direction:column;}
+.toggle-line .tl-txt strong{font-size:13.5px;font-weight:700;}
+.toggle-line .tl-txt span{font-size:11.5px;color:var(--ink-soft);}
+.switch{position:relative;width:44px;height:26px;flex-shrink:0;}
+.switch input{opacity:0;width:0;height:0;position:absolute;}
+.switch .slider{
+  position:absolute;inset:0;cursor:pointer;border-radius:999px;
+  background:#cdd9e8;transition:background .25s ease;
+}
+.switch .slider::before{
+  content:"";position:absolute;width:19px;height:19px;left:3.5px;top:3.5px;
+  border-radius:50%;background:#fff;transition:transform .25s ease;
+  box-shadow:0 2px 5px rgba(0,0,0,0.2);
+}
+.switch input:checked + .slider{background:linear-gradient(120deg,var(--sky),var(--sky-soft));}
+.switch input:checked + .slider::before{transform:translateX(18px);}
+.cta-text{
+  width:100%;margin-top:10px;resize:vertical;min-height:56px;
+  padding:12px 14px;border-radius:var(--radius-sm);
+  border:1px solid var(--line);background:#fbfdff;
+  font-size:14px;font-family:inherit;color:var(--ink);font-weight:500;line-height:1.4;
+  transition:border-color .2s ease,box-shadow .2s ease,background .2s ease;
+}
+.cta-text:focus{
+  outline:none;border-color:var(--sky);background:#fff;
+  box-shadow:0 0 0 4px rgba(0,162,255,0.14);
+}
+.cta-text.hidden{display:none;}
+
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+@media (max-width:480px){.row2{grid-template-columns:1fr;}}
+
+/* Source language badge */
+.src-badge{
+  display:inline-flex;align-items:center;gap:9px;
+  padding:8px 13px;border-radius:999px;font-size:12.5px;font-weight:650;
+  background:#f1f8ff;border:1px solid #d8ecff;color:var(--sky-deep);
+}
+.src-badge svg{flex-shrink:0;}
+.src-badge.detecting{color:var(--ink-soft);background:#f6f8fb;border-color:var(--line);}
+.src-badge .spin-i{animation:rot 1.1s linear infinite;transform-origin:center;}
+@keyframes rot{to{transform:rotate(360deg);}}
+.src-badge.locked{color:#0a8a4a;background:#eefcf3;border-color:#c7f0d7;}
+
+/* Primary button */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:10px;
+  width:100%;padding:15px 20px;border:none;border-radius:14px;cursor:pointer;
+  font-size:15px;font-weight:750;font-family:inherit;color:#fff;
+  background:linear-gradient(120deg,var(--sky-deep),var(--sky) 55%,var(--sky-soft));
+  box-shadow:0 16px 34px -14px rgba(0,120,204,0.8);
+  transition:transform .12s ease,box-shadow .2s ease,filter .2s ease,opacity .2s ease;
+}
+.btn:hover:not(:disabled){transform:translateY(-2px);filter:brightness(1.03);}
+.btn:active:not(:disabled){transform:translateY(0);}
+.btn:disabled{opacity:.55;cursor:not-allowed;box-shadow:none;}
+.btn.ghost{
+  background:#fff;color:var(--sky-deep);border:1px solid #cfe8ff;box-shadow:none;
+}
+.btn.ghost:hover:not(:disabled){background:#f2f9ff;transform:none;}
+
+.btn-spin{display:none;}
+.btn.loading .btn-spin{display:inline-grid;}
+.btn.loading .btn-label,.btn.loading .btn-ico{display:none;}
+.btn-spin svg{animation:rot .9s linear infinite;}
+
+/* ============================================================
+   Dashboard: progress + console
+   ============================================================ */
+.dash{display:grid;grid-template-columns:1fr;gap:20px;}
+
+.progress-block{display:none;}
+.progress-block.show{display:block;animation:progressReveal .35s ease;}
+@keyframes progressReveal{from{opacity:0;transform:translateY(-4px);}to{opacity:1;transform:translateY(0);}}
+
+.progress-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
+.progress-stage{font-size:13px;font-weight:650;color:var(--ink-soft);display:flex;align-items:center;gap:9px;min-width:0;}
+.progress-stage .st-txt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.progress-pct{font-size:22px;font-weight:850;letter-spacing:-.02em;color:var(--sky-deep);font-variant-numeric:tabular-nums;}
+
+.progress-track{
+  height:14px;border-radius:999px;background:#eaf1f9;overflow:hidden;position:relative;
+  border:1px solid #e0ebf6;
+}
+.progress-fill{
+  height:100%;width:0%;border-radius:999px;
+  background:linear-gradient(90deg,var(--sky-deep),var(--sky) 55%,var(--sky-soft));
+  transition:width .55s cubic-bezier(.22,.61,.36,1),background .3s ease;
+  position:relative;overflow:hidden;
+}
+.progress-fill::after{
+  content:"";position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.55),transparent);
+  transform:translateX(-100%);
+}
+.progress-fill.active::after{animation:sheen 1.6s ease-in-out infinite;}
+@keyframes sheen{to{transform:translateX(100%);}}
+.progress-fill.paused{background:linear-gradient(90deg,#7c6bff,var(--sky));}
+.progress-fill.error{background:linear-gradient(90deg,#e0332f,#ff6b66);}
+.progress-fill.error::after{animation:none;}
+.progress-pct.error{color:#e0332f;}
+
+.progress-marks{display:flex;justify-content:space-between;margin-top:8px;font-size:10.5px;color:#9fb0c4;font-weight:600;}
+
+/* Console */
+.console{
+  margin-top:6px;background:var(--term-bg);border-radius:14px;overflow:hidden;
+  border:1px solid #0e1a30;box-shadow:inset 0 2px 20px rgba(0,0,0,0.4);
+}
+.console-bar{
+  display:flex;align-items:center;gap:8px;padding:11px 14px;
+  background:#0d1728;border-bottom:1px solid var(--term-line);
+}
+.dotset{display:flex;gap:6px;}
+.dotset i{width:11px;height:11px;border-radius:50%;display:block;}
+.dotset i:nth-child(1){background:#ff5f57;}
+.dotset i:nth-child(2){background:#febc2e;}
+.dotset i:nth-child(3){background:#28c840;}
+.console-title{color:#7d93b3;font-size:12px;font-weight:600;margin-left:6px;font-family:'SFMono-Regular',ui-monospace,Menlo,Consolas,monospace;}
+.console-live{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:11px;color:#4f6party;}
+.console-live span{color:#5f7590;font-size:11px;}
+.live-dot{width:7px;height:7px;border-radius:50%;background:#3a4a63;}
+.live-dot.on{background:var(--ok);box-shadow:0 0 0 3px rgba(47,208,122,0.2);animation:pulse 1.4s ease-in-out infinite;}
+@keyframes pulse{50%{opacity:.4;}}
+
+.console-body{
+  height:270px;overflow-y:auto;padding:14px 16px;
+  font-family:'SFMono-Regular',ui-monospace,Menlo,Consolas,monospace;
+  font-size:12.5px;line-height:1.65;color:#cdd9ea;
+}
+.console-body::-webkit-scrollbar{width:9px;}
+.console-body::-webkit-scrollbar-thumb{background:#22314c;border-radius:9px;}
+.log{display:flex;gap:10px;padding:1px 0;white-space:pre-wrap;word-break:break-word;}
+.log .ts{color:#546a8a;flex-shrink:0;}
+.log .msg{flex:1;}
+.log.l-info .msg{color:#cdd9ea;}
+.log.l-ok .msg{color:var(--ok);}
+.log.l-warn .msg{color:var(--warn);}
+.log.l-err .msg{color:var(--err);}
+.log.l-sys .msg{color:var(--sky-soft);}
+.console-empty{color:#3f5474;font-style:italic;}
+
+/* ============================================================
+   Result panel
+   ============================================================ */
+.result{display:none;margin-top:20px;}
+.result.show{display:block;animation:fadeUp .5s ease;}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
+.result video{width:100%;border-radius:14px;background:#000;display:block;box-shadow:var(--shadow-sm);}
+.result-meta{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0;}
+.meta-tag{
+  display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:650;
+  padding:7px 12px;border-radius:999px;background:#f2f9ff;border:1px solid #d8ecff;color:var(--sky-deep);
+}
+.meta-tag svg{color:var(--sky);}
+
+.footer{margin-top:44px;text-align:center;color:#9fb0c4;font-size:12.5px;}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ===================== TOP BAR ===================== -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3v18"/><path d="M6 8v8"/><path d="M18 8v8"/><path d="M3 11v2"/><path d="M21 11v2"/>
+        </svg>
+      </div>
+      <div>
+        <div class="brand-name">Aurora Dub</div>
+        <div class="brand-sub">Neural Video Localization Studio</div>
+      </div>
+    </div>
+    <div class="status-pill" id="serverPill" title="Backend connection status">
+      <span class="status-dot" id="serverDot"></span>
+      <span id="serverStatusText">Checking backend…</span>
+    </div>
+  </header>
+
+  <!-- ===================== HERO ===================== -->
+  <section class="hero">
+    <h1>Dub any video into <span class="grad">any language</span>, flawlessly.</h1>
+    <p>Pick a video — upload &amp; transcription start instantly. Choose a language and voice, then press Generate Dub to translate, re-voice, and match the audio to your video's exact length.</p>
+  </section>
+
+  <!-- ===================== MAIN GRID ===================== -->
+  <div class="grid">
+
+    <!-- LEFT: Upload + Setup -->
+    <section class="card">
+      <div class="card-title">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        Source Media
+      </div>
+
+      <!-- RGB Glow Dropbox -->
+      <div class="drop-wrap" id="dropWrap">
+        <div class="dropbox" id="dropbox" role="button" tabindex="0" aria-label="Upload a video file">
+          <div class="drop-icon" aria-hidden="true">
+            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="4" width="20" height="16" rx="3"/><path d="m10 9 5 3-5 3z"/>
+            </svg>
+          </div>
+          <h3>Drag &amp; drop your video</h3>
+          <p>or click to browse your files</p>
+          <span class="hint">MP4 · MOV · MKV · WEBM — up to your server limit</span>
+        </div>
+      </div>
+      <input type="file" id="fileInput" accept="video/*" class="sr-only" />
+
+      <!-- Selected file chip -->
+      <div class="file-chip" id="fileChip">
+        <span class="fico" aria-hidden="true">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><polyline points="14 2 14 8 20 8"/><path d="m10 12 4 2-4 2z"/>
+          </svg>
+        </span>
+        <div class="fmeta">
+          <div class="fname" id="fileName">—</div>
+          <div class="fsize" id="fileSize"></div>
+        </div>
+        <button class="fclear" id="fileClear" title="Remove file" aria-label="Remove file">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--line);margin:22px 0;">
+
+      <div class="card-title">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+        Dubbing Setup
+      </div>
+
+      <div class="row2">
+        <div class="field">
+          <label for="targetLang">Target Language</label>
+          <div class="control">
+            <select id="targetLang">
+              <option value="English">English</option>
+              <option value="Spanish">Spanish</option>
+              <option value="French">French</option>
+              <option value="German">German</option>
+              <option value="Italian">Italian</option>
+              <option value="Portuguese">Portuguese</option>
+              <option value="Hindi">Hindi</option>
+              <option value="Bengali">Bengali</option>
+              <option value="Arabic">Arabic</option>
+              <option value="Japanese">Japanese</option>
+              <option value="Korean">Korean</option>
+              <option value="Chinese (Mandarin)">Chinese (Mandarin)</option>
+              <option value="Russian">Russian</option>
+              <option value="Turkish">Turkish</option>
+              <option value="Dutch">Dutch</option>
+              <option value="Indonesian">Indonesian</option>
+              <option value="Vietnamese">Vietnamese</option>
+              <option value="Thai">Thai</option>
+              <option value="Polish">Polish</option>
+              <option value="Ukrainian">Ukrainian</option>
+            </select>
+            <span class="chev" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="voiceSelect">Voice Selection</label>
+          <div class="control">
+            <select id="voiceSelect"></select>
+            <span class="chev" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Detected Source Language</label>
+        <span class="src-badge detecting" id="srcBadge">
+          <svg class="spin-i" id="srcSpin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+          </svg>
+          <span id="srcText">Auto-Detecting…</span>
+        </span>
+      </div>
+
+      <div class="field">
+        <div class="toggle-line">
+          <div class="tl-txt">
+            <strong>Ending CTA</strong>
+            <span>Speak a custom line at the very end (e.g. "Subscribe!")</span>
+          </div>
+          <label class="switch" title="Toggle ending CTA">
+            <input type="checkbox" id="ctaToggle" />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <textarea id="ctaText" class="cta-text hidden" maxlength="500" rows="2"
+          placeholder="e.g. আমাদের চ্যানেল সাবস্ক্রাইব করে রাখুন"></textarea>
+      </div>
+
+      <button class="btn" id="generateBtn" disabled>
+        <span class="btn-ico" aria-hidden="true">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        </span>
+        <span class="btn-label">Generate Dub</span>
+        <span class="btn-spin" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg></span>
+      </button>
+    </section>
+
+    <!-- RIGHT: Dashboard -->
+    <section class="card glass">
+      <div class="card-title">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/>
+        </svg>
+        Live Pipeline Dashboard
+      </div>
+
+      <div class="dash">
+        <!-- Progress: hidden until a run actually starts (see progressBlock JS) -->
+        <div id="progressBlock" class="progress-block">
+          <div class="progress-head">
+            <div class="progress-stage">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              <span class="st-txt" id="stageText">Idle — awaiting media</span>
+            </div>
+            <div class="progress-pct" id="pctText">0%</div>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+          <div class="progress-marks">
+            <span>Upload</span><span>Transcribe</span><span>Voice</span><span>Mux</span><span>Done</span>
+          </div>
+        </div>
+
+        <!-- Console -->
+        <div class="console">
+          <div class="console-bar">
+            <div class="dotset" aria-hidden="true"><i></i><i></i><i></i></div>
+            <div class="console-title">pipeline://stream — SSE</div>
+            <div class="console-live">
+              <span class="live-dot" id="liveDot"></span>
+              <span id="liveText">offline</span>
+            </div>
+          </div>
+          <div class="console-body" id="console">
+            <div class="console-empty">// Log stream is idle. Start a dub to see live server events.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Result -->
+      <div class="result" id="resultPanel">
+        <hr style="border:none;border-top:1px solid var(--line);margin:20px 0;">
+        <div class="card-title" style="margin-bottom:14px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          Dubbed Result
+        </div>
+        <video id="resultVideo" controls playsinline></video>
+        <div class="result-meta" id="resultMeta"></div>
+        <a id="downloadBtn" class="btn" download>
+          <span class="btn-ico" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+          <span>Download Dubbed Video</span>
+        </a>
+      </div>
+    </section>
+  </div>
+
+  <div class="footer">
+    Aurora Dub · Neural dubbing pipeline · Streaming over Server-Sent Events
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   Config
+   ============================================================ */
+const API_BASE = "https://video-dubbing-api-85ur.onrender.com";
+
+/* All 30 official Gemini native-TTS prebuilt voices, with Google's own
+   one-word style tag for each (ai.google.dev/gemini-api/docs/speech-generation). */
+const VOICES = [
+  { name: "Zephyr",        style: "Bright"        },
+  { name: "Puck",          style: "Upbeat"        },
+  { name: "Charon",        style: "Informative"   },
+  { name: "Kore",          style: "Firm"          },
+  { name: "Fenrir",        style: "Excitable"     },
+  { name: "Leda",          style: "Youthful"      },
+  { name: "Orus",          style: "Firm"          },
+  { name: "Aoede",         style: "Breezy"        },
+  { name: "Callirrhoe",    style: "Easy-going"    },
+  { name: "Autonoe",       style: "Bright"        },
+  { name: "Enceladus",     style: "Breathy"       },
+  { name: "Iapetus",       style: "Clear"         },
+  { name: "Umbriel",       style: "Easy-going"    },
+  { name: "Algieba",       style: "Smooth"        },
+  { name: "Despina",       style: "Smooth"        },
+  { name: "Erinome",       style: "Clear"         },
+  { name: "Algenib",       style: "Gravelly"      },
+  { name: "Rasalgethi",    style: "Informative"   },
+  { name: "Laomedeia",     style: "Upbeat"        },
+  { name: "Achernar",      style: "Soft"          },
+  { name: "Alnilam",       style: "Firm"          },
+  { name: "Schedar",       style: "Even"          },
+  { name: "Gacrux",        style: "Mature"        },
+  { name: "Pulcherrima",   style: "Forward"       },
+  { name: "Achird",        style: "Friendly"      },
+  { name: "Zubenelgenubi", style: "Casual"        },
+  { name: "Vindemiatrix",  style: "Gentle"        },
+  { name: "Sadachbia",     style: "Lively"        },
+  { name: "Sadaltager",    style: "Knowledgeable" },
+  { name: "Sulafat",       style: "Warm"          }
+];
+const DEFAULT_VOICE = "Kore";
+
+/* ============================================================
+   Element refs
+   ============================================================ */
+const $ = (id) => document.getElementById(id);
+
+const dropWrap = $("dropWrap");
+const dropbox = $("dropbox");
+const fileInput = $("fileInput");
+const fileChip = $("fileChip");
+const fileNameEl = $("fileName");
+const fileSizeEl = $("fileSize");
+const fileClear = $("fileClear");
+
+const targetLang = $("targetLang");
+const voiceSelect = $("voiceSelect");
+const ctaToggle = $("ctaToggle");
+const ctaText = $("ctaText");
+const generateBtn = $("generateBtn");
+
+const srcBadge = $("srcBadge");
+const srcText = $("srcText");
+const srcSpin = $("srcSpin");
+
+const stageText = $("stageText");
+const pctText = $("pctText");
+const progressFill = $("progressFill");
+const progressBlock = $("progressBlock");
+const consoleEl = $("console");
+const liveDot = $("liveDot");
+const liveText = $("liveText");
+
+const resultPanel = $("resultPanel");
+const resultVideo = $("resultVideo");
+const resultMeta = $("resultMeta");
+const downloadBtn = $("downloadBtn");
+
+const serverDot = $("serverDot");
+const serverStatusText = $("serverStatusText");
+
+/* ============================================================
+   App state
+   ============================================================ */
+const state = {
+  file: null,
+  running: false,           // true only while /prepare or /dub is streaming
+  phase: "idle",             // idle | uploading | preparing | ready | dubbing | done
+  sessionId: null,
+  prepared: false,
+  uploadXhr: null,
+  abort: null,               // AbortController for the current SSE fetch
+  targetLanguage: "English",
+  consoleCleared: false
+};
+
+/* ============================================================
+   Utilities
+   ============================================================ */
+function fmtBytes(bytes){
+  if(!bytes && bytes !== 0) return "";
+  const u = ["B","KB","MB","GB"]; let i = 0; let n = bytes;
+  while(n >= 1024 && i < u.length-1){ n/=1024; i++; }
+  return n.toFixed(n < 10 && i>0 ? 1 : 0) + " " + u[i];
+}
+function nowStamp(){
+  const d = new Date();
+  const p = (x,l=2)=>String(x).padStart(l,"0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(),3)}`;
+}
+function esc(s){
+  return String(s).replace(/[&<>"']/g,(c)=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+/* Classify a raw log line into a severity for coloring. */
+function logClass(msg){
+  const m = msg.toUpperCase();
+  if(m.includes("[ERROR]") || m.includes("FAIL") ) return "l-err";
+  if(m.includes("[WARN]") || m.includes("WARNING")) return "l-warn";
+  if(m.includes("[SUCCESS]") || m.includes("COMPLETE")) return "l-ok";
+  if(m.includes("[SYS]") || m.includes("//")) return "l-sys";
+  return "l-info";
+}
+
+function pushLog(msg, forceClass){
+  if(!state.consoleCleared){
+    consoleEl.innerHTML = "";
+    state.consoleCleared = true;
+  }
+  const row = document.createElement("div");
+  row.className = "log " + (forceClass || logClass(msg));
+  row.innerHTML = `<span class="ts">${nowStamp()}</span><span class="msg">${esc(msg)}</span>`;
+  consoleEl.appendChild(row);
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+
+function resetConsole(){
+  consoleEl.innerHTML = '<div class="console-empty">// Log stream is idle. Start a dub to see live server events.</div>';
+  state.consoleCleared = false;
+}
+
+function setLive(on){
+  liveDot.classList.toggle("on", !!on);
+  liveText.textContent = on ? "streaming" : "offline";
+}
+
+function setProgress(percent, message){
+  const p = Math.max(0, Math.min(100, Math.round(percent)));
+  progressFill.style.width = p + "%";
+  pctText.textContent = p + "%";
+  if(message) stageText.textContent = message;
+}
+
+function setStage(txt){ stageText.textContent = txt; }
+
+/* ============================================================
+   Source language badge
+   ============================================================ */
+function lockSourceLanguage(lang){
+  if(!lang || lang === "Unknown") return;
+  srcBadge.classList.remove("detecting");
+  srcBadge.classList.add("locked");
+  srcSpin.style.display = "none";
+  srcText.textContent = lang;
+}
+function resetSourceLanguage(){
+  srcBadge.classList.remove("locked");
+  srcBadge.classList.add("detecting");
+  srcSpin.style.display = "";
+  srcText.textContent = "Auto-Detecting…";
+}
+
+/* ============================================================
+   Voice selectors
+   ============================================================ */
+function buildMainVoiceSelect(){
+  voiceSelect.innerHTML = "";
+  VOICES.forEach(v=>{
+    const o = document.createElement("option");
+    o.value = v.name;
+    o.textContent = `${v.name} · ${v.style}`;
+    voiceSelect.appendChild(o);
+  });
+  voiceSelect.value = DEFAULT_VOICE;
+}
+
+/* ============================================================
+   File handling
+   ============================================================ */
+function acceptFile(file){
+  if(!file) return;
+  if(!file.type.startsWith("video/") && !/\.(mp4|mov|mkv|webm|avi|m4v)$/i.test(file.name)){
+    pushLog("[WARN] Selected file does not look like a video. Proceeding anyway.", "l-warn");
+  }
+  // Picking a new file while a previous one is mid-flight (or already
+  // uploaded-but-not-yet-dubbed) cleanly cancels/discards that old one.
+  abortCurrentOperation();
+  if(state.sessionId && !state.running){
+    fetch(`${API_BASE}/session/${encodeURIComponent(state.sessionId)}`, { method:"DELETE" }).catch(()=>{});
+  }
+  resetPipelineState();
+
+  state.file = file;
+  fileNameEl.textContent = file.name;
+  fileSizeEl.textContent = fmtBytes(file.size);
+  fileChip.classList.add("show");
+  dropWrap.classList.add("has-file");
+  resultPanel.classList.remove("show");
+  resetConsole();
+
+  // Upload starts the instant a video is picked (gallery, file browser, or
+  // drag-and-drop) — no extra tap needed. The actual DUBBING only starts
+  // when the person presses the Generate Dub button (see startDub()).
+  uploadAndPrepare(file);
+}
+function clearFile(){
+  abortCurrentOperation();
+  if(state.sessionId && !state.running){
+    fetch(`${API_BASE}/session/${encodeURIComponent(state.sessionId)}`, { method:"DELETE" }).catch(()=>{});
+  }
+  resetPipelineState();
+  state.file = null;
+  fileInput.value = "";
+  fileChip.classList.remove("show");
+  dropWrap.classList.remove("has-file");
+  resultPanel.classList.remove("show");
+  progressBlock.classList.remove("show");
+  progressFill.classList.remove("active", "paused", "error");
+  pctText.classList.remove("error");
+  resetConsole();
+  refreshGenerateState();
+}
+function resetPipelineState(){
+  state.sessionId = null;
+  state.prepared = false;
+  state.phase = "idle";
+  setProgress(0, "");
+  resetSourceLanguage();
+}
+function abortCurrentOperation(){
+  if(state.uploadXhr){ try{ state.uploadXhr.abort(); }catch(_){} state.uploadXhr = null; }
+  if(state.abort){ try{ state.abort.abort(); }catch(_){} state.abort = null; }
+  state.running = false;
+  setLive(false);
+}
+function refreshGenerateState(){
+  const canGenerate = !!(state.sessionId && state.prepared) && !state.running;
+  generateBtn.disabled = !canGenerate;
+  const label = generateBtn.querySelector(".btn-label");
+  if(!label) return;
+  if(state.phase === "uploading") label.textContent = "Uploading…";
+  else if(state.phase === "preparing") label.textContent = "Analyzing…";
+  else if(state.phase === "dubbing") label.textContent = "Dubbing…";
+  else if(state.phase === "ready" || state.phase === "done") label.textContent = "Generate Dub";
+  else label.textContent = "Generate Dub";
+}
+
+dropbox.addEventListener("click", ()=> fileInput.click());
+dropbox.addEventListener("keydown", (e)=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); fileInput.click(); }});
+fileInput.addEventListener("change", ()=> acceptFile(fileInput.files[0]));
+fileClear.addEventListener("click", clearFile);
+
+["dragenter","dragover"].forEach(ev=>{
+  dropWrap.addEventListener(ev,(e)=>{ e.preventDefault(); e.stopPropagation(); dropWrap.classList.add("dragging"); });
+});
+["dragleave","dragend","drop"].forEach(ev=>{
+  dropWrap.addEventListener(ev,(e)=>{ e.preventDefault(); e.stopPropagation(); if(ev!=="drop") dropWrap.classList.remove("dragging"); });
+});
+dropWrap.addEventListener("drop",(e)=>{
+  dropWrap.classList.remove("dragging");
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if(f) acceptFile(f);
+});
+/* Prevent the browser from opening the file when dropped outside the box */
+window.addEventListener("dragover",(e)=> e.preventDefault());
+window.addEventListener("drop",(e)=> e.preventDefault());
+
+/* ============================================================
+   SSE-over-fetch reader
+   Parses text/event-stream framing from a POST response body.
+   ============================================================ */
+async function readSSE(response, onEvent){
+  if(!response.ok){
+    let detail = "";
+    try{ const j = await response.json(); detail = j.detail || JSON.stringify(j); }
+    catch(_){ try{ detail = await response.text(); }catch(__){} }
+    throw new Error(`HTTP ${response.status}${detail ? " — " + detail : ""}`);
+  }
+  if(!response.body) throw new Error("Streaming not supported by this browser.");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  while(true){
+    const { value, done } = await reader.read();
+    if(done) break;
+    buffer += decoder.decode(value, { stream:true });
+
+    // Split complete events on blank line (handle \n\n and \r\n\r\n)
+    let sep;
+    while((sep = buffer.search(/\r?\n\r?\n/)) !== -1){
+      const rawEvent = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + (buffer[sep] === "\r" ? 4 : 2));
+      const parsed = parseEventBlock(rawEvent);
+      if(parsed) onEvent(parsed.event, parsed.data);
+    }
+  }
+  // Flush any trailing event without a terminating blank line
+  const tail = buffer.trim();
+  if(tail){
+    const parsed = parseEventBlock(tail);
+    if(parsed) onEvent(parsed.event, parsed.data);
+  }
+}
+
+function parseEventBlock(block){
+  const lines = block.split(/\r?\n/);
+  let event = "message";
+  const dataLines = [];
+  for(const line of lines){
+    if(!line || line.startsWith(":")) continue;      // comment / keep-alive
+    if(line.startsWith("event:")) event = line.slice(6).trim();
+    else if(line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /,""));
+  }
+  if(dataLines.length === 0 && event === "message") return null;
+  return { event, data: dataLines.join("\n") };
+}
+
+function safeJSON(str){
+  try{ return JSON.parse(str); }catch(_){ return null; }
+}
+
+/* ============================================================
+   Run lifecycle
+   ============================================================ */
+function beginRun(phase){
+  state.running = true;
+  state.phase = phase; // "preparing" | "dubbing"
+  generateBtn.classList.add("loading");
+  refreshGenerateState();
+  progressBlock.classList.add("show");
+  progressFill.classList.remove("paused", "error");
+  pctText.classList.remove("error");
+  progressFill.classList.add("active");
+  setLive(true);
+}
+function endRun(nextPhase){
+  state.running = false;
+  state.phase = nextPhase;
+  generateBtn.classList.remove("loading");
+  progressFill.classList.remove("active");
+  setLive(false);
+  refreshGenerateState();
+}
+/* keepSession=true -> the video/transcript are still valid (only
+   translate/TTS/mux failed), so leave the session in place and let the
+   person just press Generate Dub again without re-uploading. */
+function failRun(reason, keepSession){
+  pushLog("[WARN] " + (reason || "Run stopped.") + " State reset.", "l-warn");
+  if(state.abort){ try{ state.abort.abort(); }catch(_){} }
+  if(state.uploadXhr){ try{ state.uploadXhr.abort(); }catch(_){} }
+  // Make the failure visually unmistakable on the bar itself, not just in
+  // the log — real-time SSE progress, so a red bar means it's ACTUALLY
+  // stuck/failed right now, not a guess.
+  progressFill.classList.remove("active");
+  progressFill.classList.add("error");
+  pctText.classList.add("error");
+  if(keepSession && state.sessionId && state.prepared){
+    endRun("ready");
+  }else{
+    resetPipelineState();
+    endRun("idle");
+  }
+}
+function finishRun(d){
+  setProgress(100, "Complete");
+  pushLog("[SUCCESS] Dubbing finished. Preparing preview…", "l-ok");
+  endRun("done");
+  const sid = d.session_id || state.sessionId;
+  if(sid){ state.sessionId = sid; presentResult(sid, d); }
+}
+
+/* ============================================================
+   SSE event handlers — one for the auto "analyze" phase (/prepare),
+   one for the manual "dub" phase (/dub). Kept separate because their
+   "done"/"error" semantics differ (ready-to-dub vs. finished-with-video).
+   ============================================================ */
+function handlePrepareEvent(event, data){
+  switch(event){
+    case "log": {
+      pushLog(data);
+      const m = /source language detected:\s*(.+)/i.exec(data);
+      if(m) lockSourceLanguage(m[1].trim());
+      break;
+    }
+    case "progress": {
+      const p = safeJSON(data);
+      if(p && typeof p.percent === "number"){
+        // Map the /prepare stream's own 0-100 onto the bar's 48-100 band
+        // (0-48 was the raw upload, tracked separately via XHR progress).
+        setProgress(48 + p.percent * 0.52, p.message || undefined);
+      }
+      break;
+    }
+    case "error": {
+      pushLog(String(data), "l-err");
+      failRun("Analysis failed — please try re-uploading the video.");
+      break;
+    }
+    case "done": {
+      const d = safeJSON(data) || {};
+      state.prepared = true;
+      if(d.source_language) lockSourceLanguage(d.source_language);
+      setProgress(100, d.line_count ? `Ready — ${d.line_count} line(s) detected` : "Ready");
+      pushLog("[SUCCESS] Ready to dub. Pick a language/voice and press Generate Dub.", "l-ok");
+      endRun("ready");
+      break;
+    }
+    default: {
+      if(data) pushLog(`[${event}] ${data}`);
+    }
+  }
+}
+
+function handleDubEvent(event, data){
+  switch(event){
+    case "log": {
+      pushLog(data);
+      const m = /source language detected:\s*(.+)/i.exec(data);
+      if(m) lockSourceLanguage(m[1].trim());
+      break;
+    }
+    case "progress": {
+      const p = safeJSON(data);
+      if(p && typeof p.percent === "number"){
+        setProgress(p.percent, p.message || undefined);
+      }
+      break;
+    }
+    case "error": {
+      pushLog(String(data), "l-err");
+      // Video + transcript are still on the server — no need to re-upload,
+      // just let the person press Generate Dub again.
+      failRun("Dubbing failed.", true);
+      break;
+    }
+    case "done": {
+      const d = safeJSON(data) || {};
+      finishRun(d);
+      break;
+    }
+    default: {
+      if(data) pushLog(`[${event}] ${data}`);
+    }
+  }
+}
+
+/* ============================================================
+   Result presentation
+   The result is no longer fetched into a JS blob first (that meant
+   waiting for the ENTIRE file to arrive before anything could play —
+   very slow on a weak connection). The <video> tag and the download
+   link both point straight at /download, so the browser streams it
+   natively (progressive playback, native Range/seek support, and the
+   OS's own download manager for the Save button).
+   ============================================================ */
+function presentResult(sessionId, meta){
+  resultMeta.innerHTML = "";
+  const tags = [];
+  if(meta.source_language) tags.push(["Source", meta.source_language]);
+  if(meta.target_language) tags.push(["Target", meta.target_language]);
+  if(typeof meta.segments !== "undefined") tags.push(["Segments", meta.segments]);
+  tags.forEach(([k,v])=>{
+    const el = document.createElement("span");
+    el.className = "meta-tag";
+    el.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> ${esc(k)}: ${esc(String(v))}`;
+    resultMeta.appendChild(el);
+  });
+
+  resultPanel.classList.add("show");
+  const url = `${API_BASE}/download/${encodeURIComponent(sessionId)}`;
+  resultVideo.src = url;
+  resultVideo.load();
+  downloadBtn.href = url;
+  downloadBtn.setAttribute("download", `dubbed_${sessionId}.mp4`);
+  pushLog("[SUCCESS] Preview ready. Download available.", "l-ok");
+}
+
+/* ============================================================
+   Network — Phase 1 (automatic): /upload (real XHR progress) -> /prepare
+   ============================================================ */
+function uploadAndPrepare(file){
+  beginRun("uploading");
+  setProgress(0, "Uploading…");
+  pushLog(`[SYS] Uploading "${file.name}" (${fmtBytes(file.size)})…`, "l-sys");
+
+  const xhr = new XMLHttpRequest();
+  state.uploadXhr = xhr;
+  const fd = new FormData();
+  fd.append("file", file);
+
+  xhr.upload.addEventListener("progress", (e)=>{
+    if(!e.lengthComputable) return;
+    const frac = e.loaded / e.total;
+    setProgress(frac * 45, `Uploading… ${Math.round(frac * 100)}%`); // upload = first 45% of the bar
+  });
+
+  xhr.addEventListener("load", ()=>{
+    state.uploadXhr = null;
+    if(xhr.status < 200 || xhr.status >= 300){
+      let detail = xhr.responseText || `HTTP ${xhr.status}`;
+      try{ const j = JSON.parse(xhr.responseText); detail = j.detail || detail; }catch(_){}
+      pushLog("[ERROR] Upload failed: " + detail, "l-err");
+      failRun("Upload failed.");
+      return;
+    }
+    let j = null;
+    try{ j = JSON.parse(xhr.responseText); }catch(_){}
+    if(!j || !j.session_id){
+      pushLog("[ERROR] Upload succeeded but no session id was returned.", "l-err");
+      failRun("Bad upload response.");
+      return;
+    }
+    state.sessionId = j.session_id;
+    pushLog("[SUCCESS] Upload complete. Analyzing (extracting audio + transcribing)…", "l-ok");
+    setProgress(48, "Analyzing…");
+    prepareSession(j.session_id);
+  });
+
+  xhr.addEventListener("error", ()=>{
+    state.uploadXhr = null;
+    pushLog("[ERROR] Upload connection failed.", "l-err");
+    failRun("Upload connection error.");
+  });
+  xhr.addEventListener("abort", ()=>{ state.uploadXhr = null; });
+
+  xhr.open("POST", `${API_BASE}/upload`);
+  xhr.send(fd);
+}
+
+async function prepareSession(sessionId){
+  state.phase = "preparing";
+  refreshGenerateState();
+  state.abort = new AbortController();
+  try{
+    const res = await fetch(`${API_BASE}/prepare/${encodeURIComponent(sessionId)}`, {
+      method: "GET", signal: state.abort.signal,
+    });
+    await readSSE(res, handlePrepareEvent);
+    if(state.phase === "preparing"){
+      pushLog("[WARN] Analysis stream closed unexpectedly before completion.", "l-warn");
+      failRun("Analysis stream ended early.");
+    }
+  }catch(err){
+    if(err.name === "AbortError"){ /* cancelled — a new file was picked */ }
+    else{
+      pushLog("[ERROR] Analysis connection failed: " + err.message, "l-err");
+      failRun("Analysis stream error.");
+    }
+  }
+}
+
+/* ============================================================
+   Network — Phase 2 (manual, button press): /dub
+   ============================================================ */
+async function startDub(){
+  if(!state.sessionId || !state.prepared || state.running) return;
+
+  state.targetLanguage = targetLang.value;
+  const ctaValue = (ctaToggle.checked && ctaText.value.trim()) ? ctaText.value.trim() : "";
+  beginRun("dubbing");
+  resultPanel.classList.remove("show");
+  setProgress(0, "Starting dub…");
+  pushLog(`[SYS] Dubbing into ${targetLang.value} · Voice: ${voiceSelect.value}`, "l-sys");
+  if(ctaValue) pushLog(`[SYS] Ending CTA enabled: "${ctaValue}"`, "l-sys");
+
+  const fd = new FormData();
+  fd.append("session_id", state.sessionId);
+  fd.append("target_language", targetLang.value);
+  fd.append("voice_name", voiceSelect.value);
+  fd.append("ending_cta", ctaValue);
+
+  state.abort = new AbortController();
+  try{
+    const res = await fetch(`${API_BASE}/dub`, { method:"POST", body:fd, signal:state.abort.signal });
+    await readSSE(res, handleDubEvent);
+    if(state.phase === "dubbing"){
+      pushLog("[WARN] Stream closed unexpectedly before completion.", "l-warn");
+      failRun("Dub stream ended early.", true);
+    }
+  }catch(err){
+    if(err.name === "AbortError"){ /* user cancelled */ }
+    else{
+      pushLog("[ERROR] Connection failed: " + err.message, "l-err");
+      failRun("Dub stream error.", true);
+    }
+  }
+}
+
+generateBtn.addEventListener("click", startDub);
+
+ctaToggle.addEventListener("change", ()=>{
+  ctaText.classList.toggle("hidden", !ctaToggle.checked);
+  if(ctaToggle.checked) ctaText.focus();
+});
+
+/* ============================================================
+   Backend health check
+   ============================================================ */
+async function checkHealth(){
+  try{
+    const res = await fetch(`${API_BASE}/health`, { method:"GET" });
+    const j = await res.json();
+    if(j.status === "ok"){
+      const hasKeys = (j.gemini_keys_configured|0) > 0 && (j.groq_keys_configured|0) > 0;
+      serverDot.style.background = hasKeys ? "var(--ok)" : "var(--warn)";
+      serverStatusText.textContent = hasKeys ? "Backend online" : "Online · API key missing";
+    }else{
+      serverDot.style.background = "var(--warn)";
+      serverStatusText.textContent = "Backend degraded";
+    }
+  }catch(_){
+    serverDot.style.background = "var(--err)";
+    serverStatusText.textContent = "Backend unreachable";
+  }
+}
+
+/* ============================================================
+   Init
+   ============================================================ */
+buildMainVoiceSelect();
+resetConsole();
+refreshGenerateState();
+checkHealth();
+</script>
+</body>
+</html>
