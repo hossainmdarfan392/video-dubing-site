@@ -5,10 +5,14 @@ Ultimate Premium Video Dubbing Platform (Single-Character Master Build)
 FastAPI backend, single-character-only, real-time-duration-matching
 architecture:
 
-  * Groq (whisper-large-v3)              -> heavy audio transcription
-  * Groq (openai/gpt-oss-120b)           -> elite translation
-  * Gemini native TTS (3-model fallback,
-    multi-key rotation)                  -> pure-text voice generation
+  * Groq (whisper-large-v3, +backup model)  -> heavy audio transcription
+  * Groq (openai/gpt-oss-120b, +backup model) -> elite translation
+  * Gemini (gemini-3.5-flash, +backup models) -> transcription/translation
+    when ENGINE_MODE="gemini" (the default)
+  * Gemini native TTS (4-model fallback,
+    multi-key rotation)                     -> pure-text voice generation
+  (every model above runs inside its own ordered fallback chain — see
+  "Backup / never-crash design" below.)
 
 Two-phase flow (upload vs. dub are deliberately separate)
 -----------------------------------------------------------
@@ -80,6 +84,14 @@ Backup / never-crash design
 * Speed ratios are always clamped to a safe FFmpeg range (0.25x-4.0x) so
   a pathological mismatch (e.g. wildly different script vs. video length)
   degrades gracefully with a [WARN] instead of crashing the render.
+* Transcription and translation ("script retouch") each run their OWN
+  ordered model-fallback chain too (GEMINI_TRANSCRIBE_MODELS /
+  GEMINI_TRANSLATE_MODELS for the Gemini engine, WHISPER_MODELS /
+  TRANSLATION_MODELS for the Groq engine) — independent of, and using the
+  same proven pattern as, the TTS fallback above: every model in the chain
+  is tried against every configured API key before that step is considered
+  failed, so a single model being deprecated, rate-limited, or briefly down
+  never takes the whole pipeline down with it.
 
 Environment
 -----------
@@ -100,8 +112,25 @@ ENGINE_MODE     (optional)   "gemini" (default) or "groq" — which engine
                               default. The frontend's toggle can override
                               this per-session via ?engine= on /prepare and
                               /dub without restarting the server.
-GEMINI_TRANSCRIBE_MODEL (optional) Default: "gemini-2.5-flash"
-GEMINI_TRANSLATE_MODEL  (optional) Default: "gemini-2.5-flash"
+GEMINI_TRANSCRIBE_MODELS (optional) Comma-separated ordered fallback chain
+                              used for Gemini transcription. Default:
+                              "gemini-3.5-flash,gemini-2.5-flash,
+                              gemini-3.1-flash-lite" (all three are current,
+                              verified-working Gemini text models at the time
+                              of this build). The old singular
+                              GEMINI_TRANSCRIBE_MODEL still works and is
+                              promoted to the front of the chain if set.
+GEMINI_TRANSLATE_MODELS  (optional) Same shape/default/back-compat as
+                              GEMINI_TRANSCRIBE_MODELS above, used for the
+                              translation ("script retouch") step.
+WHISPER_MODELS  (optional)   Comma-separated ordered fallback chain for Groq
+                              transcription. Default:
+                              "whisper-large-v3,whisper-large-v3-turbo".
+                              The old singular WHISPER_MODEL still works.
+TRANSLATION_MODELS (optional) Comma-separated ordered fallback chain for
+                              Groq translation. Default:
+                              "openai/gpt-oss-120b,qwen/qwen3.6-27b". The old
+                              singular TRANSLATION_MODEL still works.
 CORS_ALLOW_ORIGINS (optional) Comma-separated allow-list. Default: "*".
 WORK_DIR        (optional)   Scratch dir. Default: ./_sessions
 FFMPEG_BIN      (optional)   Default: "ffmpeg"
@@ -180,14 +209,70 @@ ENGINE_MODE_DEFAULT = os.environ.get("ENGINE_MODE", "gemini").strip().lower()
 if ENGINE_MODE_DEFAULT not in ("gemini", "groq"):
     ENGINE_MODE_DEFAULT = "gemini"
 
-GEMINI_TRANSCRIBE_MODEL = os.environ.get("GEMINI_TRANSCRIBE_MODEL", "gemini-2.5-flash")
-GEMINI_TRANSLATE_MODEL = os.environ.get("GEMINI_TRANSLATE_MODEL", "gemini-2.5-flash")
+def _parse_model_chain(singular_env: str, plural_env: str, default_chain: List[str]) -> List[str]:
+    """
+    Build an ordered, de-duplicated model fallback chain for a
+    transcription/translation step. Reads the plural, comma-separated env
+    var first (e.g. GEMINI_TRANSCRIBE_MODELS); falls back to the built-in
+    default chain if unset. The old singular env var (e.g.
+    GEMINI_TRANSCRIBE_MODEL) still works for back-compat: if set, it is
+    promoted to the FRONT of the chain so it stays the top-priority model,
+    exactly like before this change for anyone who already configured it.
+    """
+    chain = _parse_key_list(os.environ.get(plural_env, "")) or list(default_chain)
+    legacy = os.environ.get(singular_env, "").strip()
+    if legacy:
+        chain = [legacy] + [m for m in chain if m != legacy]
+    return chain
+
+
+# --- Gemini: transcription + translation ("script retouch") model chains ---
+# Verified-current, stable Gemini text models as of this build:
+#   1. gemini-3.5-flash      -> current GA flagship Flash model (this is now
+#                                what the "gemini-flash-latest" alias points
+#                                to) — tried first for the best accuracy.
+#   2. gemini-2.5-flash      -> still GA and fully working today, kept as an
+#                                immediate fallback (Google has already
+#                                scheduled its shutdown, so it is
+#                                deliberately NOT the primary choice).
+#   3. gemini-3.1-flash-lite -> stable with no shutdown scheduled; cheap,
+#                                fast last-resort fallback if both Flash
+#                                models above are unavailable at once.
+# Every model in the chain is tried, against every configured API key,
+# before the step is considered failed — see gemini_transcribe() and
+# _gemini_translate_chunk() below.
+GEMINI_TRANSCRIBE_MODELS: List[str] = _parse_model_chain(
+    "GEMINI_TRANSCRIBE_MODEL", "GEMINI_TRANSCRIBE_MODELS",
+    ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-3.1-flash-lite"],
+)
+GEMINI_TRANSLATE_MODELS: List[str] = _parse_model_chain(
+    "GEMINI_TRANSLATE_MODEL", "GEMINI_TRANSLATE_MODELS",
+    ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-3.1-flash-lite"],
+)
+# Simple aliases (top-priority model) kept around for log lines / /health.
+GEMINI_TRANSCRIBE_MODEL = GEMINI_TRANSCRIBE_MODELS[0]
+GEMINI_TRANSLATE_MODEL = GEMINI_TRANSLATE_MODELS[0]
 
 # --- Groq: fallback/alternate transcription + translation engine ------------
-WHISPER_MODEL = "whisper-large-v3"            # heavy audio -> text
-TRANSLATION_MODEL = "openai/gpt-oss-120b"     # elite translation
-                                               # (llama-3.3-70b-versatile is
-                                               # retired on Groq as of 2026-08-16)
+# whisper-large-v3       -> max-accuracy ASR, tried first.
+# whisper-large-v3-turbo -> faster/cheaper backup with comparable accuracy;
+#                            used automatically if the primary is busy.
+WHISPER_MODELS: List[str] = _parse_model_chain(
+    "WHISPER_MODEL", "WHISPER_MODELS",
+    ["whisper-large-v3", "whisper-large-v3-turbo"],
+)
+WHISPER_MODEL = WHISPER_MODELS[0]             # heavy audio -> text (alias)
+
+# openai/gpt-oss-120b -> current flagship Groq text model, tried first.
+# qwen/qwen3.6-27b    -> Groq's own documented replacement/alternate for the
+#                        retired llama-3.3-70b-versatile; used as backup.
+# (llama-3.3-70b-versatile itself is retired on Groq as of 2026-08-16, so it
+# is intentionally NOT part of this chain.)
+TRANSLATION_MODELS: List[str] = _parse_model_chain(
+    "TRANSLATION_MODEL", "TRANSLATION_MODELS",
+    ["openai/gpt-oss-120b", "qwen/qwen3.6-27b"],
+)
+TRANSLATION_MODEL = TRANSLATION_MODELS[0]     # elite translation (alias)
 
 # --- Gemini: pure-text native TTS engine, with ordered auto-fallback --------
 # One model busy -> auto request goes to the next model. Still busy across
@@ -673,31 +758,41 @@ async def groq_transcribe(audio_path: Path) -> dict:
     if not GROQ_API_KEYS:
         raise RuntimeError("No GROQ_API_KEY(s) configured.")
 
-    def _do(api_key: str):
+    def _do(model_name: str, api_key: str):
         client = get_groq_client(api_key)
         with open(audio_path, "rb") as f:
             audio_bytes = f.read()
         resp = client.audio.transcriptions.create(
             file=(audio_path.name, audio_bytes),
-            model=WHISPER_MODEL,
+            model=model_name,
             response_format="verbose_json",
             temperature=0.0,
         )
         return resp
 
+    # Backup-model support: try every model in WHISPER_MODELS (in order),
+    # and for EACH model try every configured GROQ_API_KEYS entry, before
+    # giving up. This mirrors the Gemini TTS fallback pattern so a single
+    # ASR model being deprecated/rate-limited/briefly down never fails the
+    # whole transcription step.
     resp = None
+    model_used: Optional[str] = None
     last_err: Optional[Exception] = None
-    for key in GROQ_API_KEYS:
-        try:
-            resp = await asyncio.to_thread(_do, key)
+    for model_name in WHISPER_MODELS:
+        for key in GROQ_API_KEYS:
+            try:
+                resp = await asyncio.to_thread(_do, model_name, key)
+                model_used = model_name
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                continue
+        if resp is not None:
             break
-        except Exception as exc:  # noqa: BLE001
-            last_err = exc
-            continue
     if resp is None:
         raise RuntimeError(
-            f"Groq Whisper transcription failed on all {len(GROQ_API_KEYS)} "
-            f"configured key(s): {last_err}"
+            f"Groq Whisper transcription failed on all {len(WHISPER_MODELS)} "
+            f"model(s) x {len(GROQ_API_KEYS)} configured key(s): {last_err}"
         ) from last_err
 
     # The Groq SDK returns a pydantic-style object; support both attr + dict.
@@ -738,7 +833,7 @@ async def groq_transcribe(audio_path: Path) -> dict:
     if not segments:
         raise RuntimeError("Groq Whisper returned no usable transcript segments.")
 
-    return {"language": language, "segments": segments}
+    return {"language": language, "segments": segments, "asr_model": model_used}
 
 
 def _translation_style_notes(target_language: str) -> str:
@@ -790,10 +885,10 @@ async def gemini_transcribe(audio_path: Path) -> dict:
         '[{"start": 0.0, "end": 2.4, "text": "..."}]}'
     )
 
-    def _do(api_key: str) -> str:
+    def _do(model_name: str, api_key: str) -> str:
         client = get_client(api_key)
         resp = client.models.generate_content(
-            model=GEMINI_TRANSCRIBE_MODEL,
+            model=model_name,
             contents=[
                 types.Part.from_bytes(data=audio_bytes, mime_type="audio/mpeg"),
                 prompt,
@@ -801,19 +896,27 @@ async def gemini_transcribe(audio_path: Path) -> dict:
         )
         return resp.text
 
+    # Backup-model support: try every model in GEMINI_TRANSCRIBE_MODELS (in
+    # order), and for EACH model try every configured GEMINI_API_KEYS entry,
+    # before giving up — same proven pattern as the Gemini TTS fallback.
     raw = None
+    model_used: Optional[str] = None
     last_err: Optional[Exception] = None
-    for key in GEMINI_API_KEYS:
-        try:
-            raw = await asyncio.to_thread(_do, key)
+    for model_name in GEMINI_TRANSCRIBE_MODELS:
+        for key in GEMINI_API_KEYS:
+            try:
+                raw = await asyncio.to_thread(_do, model_name, key)
+                model_used = model_name
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                continue
+        if raw is not None:
             break
-        except Exception as exc:  # noqa: BLE001
-            last_err = exc
-            continue
     if raw is None:
         raise RuntimeError(
-            f"Gemini transcription failed on all {len(GEMINI_API_KEYS)} "
-            f"configured key(s): {last_err}"
+            f"Gemini transcription failed on all {len(GEMINI_TRANSCRIBE_MODELS)} "
+            f"model(s) x {len(GEMINI_API_KEYS)} configured key(s): {last_err}"
         ) from last_err
 
     data = _extract_json(raw)
@@ -832,7 +935,7 @@ async def gemini_transcribe(audio_path: Path) -> dict:
             continue
     if not segments:
         raise RuntimeError("Gemini returned no usable transcript segments.")
-    return {"language": language, "segments": segments}
+    return {"language": language, "segments": segments, "asr_model": model_used}
 
 
 async def _gemini_translate_chunk(
@@ -869,10 +972,10 @@ async def _gemini_translate_chunk(
         ensure_ascii=False,
     )
 
-    def _do(api_key: str) -> str:
+    def _do(model_name: str, api_key: str) -> str:
         client = get_client(api_key)
         resp = client.models.generate_content(
-            model=GEMINI_TRANSLATE_MODEL,
+            model=model_name,
             contents=[system_prompt, user_payload],
         )
         return resp.text
@@ -880,19 +983,25 @@ async def _gemini_translate_chunk(
     if not GEMINI_API_KEYS:
         raise RuntimeError("No GEMINI_API_KEY(s) configured.")
 
+    # Backup-model support: try every model in GEMINI_TRANSLATE_MODELS (in
+    # order), and for EACH model try every configured GEMINI_API_KEYS entry,
+    # before giving up on this chunk (the caller retries/falls back further).
     raw = None
     last_err: Optional[Exception] = None
-    for key in GEMINI_API_KEYS:
-        try:
-            raw = await asyncio.to_thread(_do, key)
+    for model_name in GEMINI_TRANSLATE_MODELS:
+        for key in GEMINI_API_KEYS:
+            try:
+                raw = await asyncio.to_thread(_do, model_name, key)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                continue
+        if raw is not None:
             break
-        except Exception as exc:  # noqa: BLE001
-            last_err = exc
-            continue
     if raw is None:
         raise RuntimeError(
-            f"Gemini translation failed on all {len(GEMINI_API_KEYS)} "
-            f"configured key(s): {last_err}"
+            f"Gemini translation failed on all {len(GEMINI_TRANSLATE_MODELS)} "
+            f"model(s) x {len(GEMINI_API_KEYS)} configured key(s): {last_err}"
         ) from last_err
 
     try:
@@ -1041,11 +1150,11 @@ async def _groq_translate_chunk(
         ensure_ascii=False,
     )
 
-    def _do(api_key: str) -> str:
+    def _do(model_name: str, api_key: str) -> str:
         client = get_groq_client(api_key)
         try:
             resp = client.chat.completions.create(
-                model=TRANSLATION_MODEL,
+                model=model_name,
                 temperature=0.2,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -1057,7 +1166,7 @@ async def _groq_translate_chunk(
             # Some Groq model/runtime combos reject `response_format`;
             # gracefully retry once without strict JSON mode.
             resp = client.chat.completions.create(
-                model=TRANSLATION_MODEL,
+                model=model_name,
                 temperature=0.2,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -1069,19 +1178,25 @@ async def _groq_translate_chunk(
     if not GROQ_API_KEYS:
         raise RuntimeError("No GROQ_API_KEY(s) configured.")
 
+    # Backup-model support: try every model in TRANSLATION_MODELS (in
+    # order), and for EACH model try every configured GROQ_API_KEYS entry,
+    # before giving up on this chunk (the caller retries/falls back further).
     raw = None
     last_err: Optional[Exception] = None
-    for key in GROQ_API_KEYS:
-        try:
-            raw = await asyncio.to_thread(_do, key)
+    for model_name in TRANSLATION_MODELS:
+        for key in GROQ_API_KEYS:
+            try:
+                raw = await asyncio.to_thread(_do, model_name, key)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                continue
+        if raw is not None:
             break
-        except Exception as exc:  # noqa: BLE001
-            last_err = exc
-            continue
     if raw is None:
         raise RuntimeError(
-            f"Groq translation failed on all {len(GROQ_API_KEYS)} "
-            f"configured key(s): {last_err}"
+            f"Groq translation failed on all {len(TRANSLATION_MODELS)} "
+            f"model(s) x {len(GROQ_API_KEYS)} configured key(s): {last_err}"
         ) from last_err
 
     try:
@@ -1674,16 +1789,22 @@ async def run_prepare(sess: Session) -> AsyncGenerator[dict, None]:
         engine = sess.engine
         transcript = None
         if engine == "gemini":
-            yield sse_progress(50, f"Transcribing with Gemini ({GEMINI_TRANSCRIBE_MODEL})")
-            yield sse_log("[INFO] Sending audio to Gemini for transcription (primary engine)...")
+            yield sse_progress(50, f"Transcribing with Gemini ({GEMINI_TRANSCRIBE_MODELS[0]})")
+            yield sse_log(
+                "[INFO] Sending audio to Gemini for transcription (primary engine) "
+                f"— model fallback chain: {', '.join(GEMINI_TRANSCRIBE_MODELS)}..."
+            )
             async for ev in self_heal("Gemini transcription", lambda: gemini_transcribe(sess.audio_path)):
                 if "_result" in ev:
                     transcript = ev["_result"]
                 else:
                     yield ev
         else:
-            yield sse_progress(50, "Transcribing with Groq Whisper (whisper-large-v3)")
-            yield sse_log("[INFO] Streaming audio to Groq Whisper for instant transcription...")
+            yield sse_progress(50, f"Transcribing with Groq Whisper ({WHISPER_MODELS[0]})")
+            yield sse_log(
+                "[INFO] Streaming audio to Groq Whisper for instant transcription "
+                f"— model fallback chain: {', '.join(WHISPER_MODELS)}..."
+            )
             async for ev in self_heal("Groq transcription", lambda: groq_transcribe(sess.audio_path)):
                 if "_result" in ev:
                     transcript = ev["_result"]
@@ -1725,7 +1846,8 @@ async def run_dub(sess: Session) -> AsyncGenerator[dict, None]:
         if engine == "gemini":
             yield sse_progress(30, f"Translating {len(sess.raw_segments)} line(s) with Gemini")
             yield sse_log(
-                f"[INFO] Translating with Gemini ({GEMINI_TRANSLATE_MODEL}) in "
+                f"[INFO] Translating with Gemini ({GEMINI_TRANSLATE_MODELS[0]}; backup "
+                f"chain: {', '.join(GEMINI_TRANSLATE_MODELS[1:]) or 'none'}) in "
                 f"~{TRANSLATE_CHUNK_CHAR_BUDGET}-char chunks — every line is "
                 "verified 1:1 and re-touched for a natural target-audience "
                 "voice, so none can be silently dropped..."
@@ -1740,9 +1862,10 @@ async def run_dub(sess: Session) -> AsyncGenerator[dict, None]:
                 else:
                     yield ev
         else:
-            yield sse_progress(30, f"Translating {len(sess.raw_segments)} line(s) with Groq (gpt-oss-120b)")
+            yield sse_progress(30, f"Translating {len(sess.raw_segments)} line(s) with Groq ({TRANSLATION_MODELS[0]})")
             yield sse_log(
-                f"[INFO] Translating with Groq openai/gpt-oss-120b in "
+                f"[INFO] Translating with Groq ({TRANSLATION_MODELS[0]}; backup "
+                f"chain: {', '.join(TRANSLATION_MODELS[1:]) or 'none'}) in "
                 f"~{TRANSLATE_CHUNK_CHAR_BUDGET}-char chunks — every line is "
                 "verified 1:1, so none can be silently dropped..."
             )
@@ -1785,7 +1908,7 @@ async def run_dub(sess: Session) -> AsyncGenerator[dict, None]:
 # FastAPI app + endpoints
 # --------------------------------------------------------------------------- #
 
-app = FastAPI(title="Ultimate Premium Video Dubbing Platform", version="4.0.0-single")
+app = FastAPI(title="Ultimate Premium Video Dubbing Platform", version="4.1.0-single")
 
 # CORS_ALLOW_ORIGINS (optional): comma-separated allow-list, e.g.
 # "https://your-site.netlify.app,https://your-custom-domain.com". Defaults
@@ -1816,9 +1939,13 @@ async def health() -> JSONResponse:
         "tts_model_labels": TTS_MODEL_CATALOG,
         "voices": GEMINI_VOICE_NAMES,
         "whisper_model": WHISPER_MODEL,
+        "whisper_models": WHISPER_MODELS,
         "translation_model": TRANSLATION_MODEL,
+        "translation_models": TRANSLATION_MODELS,
         "gemini_transcribe_model": GEMINI_TRANSCRIBE_MODEL,
+        "gemini_transcribe_models": GEMINI_TRANSCRIBE_MODELS,
         "gemini_translate_model": GEMINI_TRANSLATE_MODEL,
+        "gemini_translate_models": GEMINI_TRANSLATE_MODELS,
         "atempo_lock": [ATEMPO_LOCK_MIN, ATEMPO_LOCK_MAX],
         "silence_trim_lock_ms": SILENCE_TRIM_LADDER_MS,
         "ffmpeg": shutil.which(FFMPEG_BIN) is not None,
