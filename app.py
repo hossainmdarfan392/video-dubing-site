@@ -153,6 +153,30 @@ Backup / never-crash design
   silent processing (e.g. waiting out a congested model) doesn't get the
   connection killed by an idle-timing-out proxy in between.
 
+TTS model selection (Single vs Multiple) — NEW
+------------------------------------------------
+Four Gemini native-TTS models are available (TTS_MODEL_CATALOG):
+gemini-2.5-flash-preview-tts, gemini-3.1-flash-tts-preview,
+gemini-3.8-flash-tts, and gemini-3.8-flash-lite-tts. The person picks, per
+dub, either:
+  * SINGLE  — one preferred model. Every configured Gemini key races on
+    that ONE model first (same key-racing engine as always — nothing about
+    it changes). If that model is completely down across every key, the
+    pipeline still automatically falls through to the remaining catalog
+    models afterward — picking a single model narrows which one goes
+    FIRST, it never removes the underlying never-crash safety net.
+  * MULTIPLE — several preferred models, in the order picked. A problem
+    with one immediately switches to the next PICKED model — no waiting
+    on the one that's down. Once every picked model is exhausted, any
+    remaining (unpicked) catalog models are still tried as a final safety
+    net, exactly like SINGLE mode.
+See _resolve_tts_model_order (turns the /dub form fields tts_mode +
+tts_models into the ordered list) and the `models=` parameter now accepted
+by gemini_tts_with_fallback — the racing/fallback engine itself (see
+"Backup / never-crash design" above) is unchanged; it now just walks
+whichever ordered model list this particular dub resolved to instead of
+always the same hardcoded TTS_MODELS default.
+
 Environment
 -----------
 GEMINI_API_KEYS (required)   Comma-separated list of Gemini API keys.
@@ -171,6 +195,7 @@ FFPROBE_BIN     (optional)   Default: "ffprobe"
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import os
 import re
@@ -227,6 +252,22 @@ WORK_DIR = Path(os.environ.get("WORK_DIR", "./_sessions")).resolve()
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")
 FFPROBE_BIN = os.environ.get("FFPROBE_BIN", "ffprobe")
 
+# Real-world evidence: on a small Render instance (512MB RAM), letting every
+# ffmpeg/ffprobe call fire off unbounded (e.g. a long/dense video's several
+# TTS chunks, each ALSO racing 3 silence-trim-ladder rungs concurrently —
+# see SILENCE_TRIM_LADDER_MS below — can mean a dozen+ ffmpeg processes all
+# decoding/filtering media in memory AT ONCE) is what actually exceeds the
+# container's memory limit and gets it killed/restarted — NOT any local
+# transcription model (this pipeline only ever calls Groq's cloud Whisper
+# API for transcription; it never loads a model in-process — see
+# groq_transcribe). Capping how many ffmpeg/ffprobe subprocesses may run
+# AT THE SAME TIME (regardless of how many chunks/rungs WANT to run) keeps
+# peak memory bounded on small instances without removing or serializing
+# any feature — every ffmpeg call still happens exactly as before, some
+# just wait briefly for a free slot instead of all launching at once.
+# Raise this (env var, no code change) on a bigger Render plan.
+FFMPEG_MAX_CONCURRENT = max(1, int(os.environ.get("FFMPEG_MAX_CONCURRENT", "2")))
+
 # --- Groq: transcription + translation engine -------------------------------
 WHISPER_MODEL = "whisper-large-v3"            # heavy audio -> text
 TRANSLATION_MODEL = "openai/gpt-oss-120b"     # elite translation
@@ -237,16 +278,39 @@ TRANSLATION_MODEL = "openai/gpt-oss-120b"     # elite translation
 # One model busy -> auto request goes to the next model. Still busy across
 # every model -> auto-rotate to the next GEMINI_API_KEYS entry. Every
 # model x key combination exhausted -> a clean error is raised via SSE.
-# gemini-2.5-flash-preview-tts is tried FIRST: it is the more established of
-# the three previews, and in practice the brand-new gemini-3.1-flash-tts
-# tends to return 503 "high demand" more often while its own capacity is
-# still ramping up. This ordering is a practical hedge based on observed
-# behavior, not a guarantee — Google's own server load is outside our
-# control either way.
+# gemini-2.5-flash-preview-tts is tried FIRST by default: it is the most
+# established of the four, and in practice a brand-new preview model tends
+# to return 503 "high demand" more often while its own capacity is still
+# ramping up. This ordering is a practical hedge based on observed behavior,
+# not a guarantee — Google's own server load is outside our control either
+# way. gemini-3.8-flash-lite-tts / gemini-3.8-flash-tts are Google's newer
+# (Sept-2026) TTS models — the lite one is the drop-in replacement for
+# gemini-3.1-flash-tts-preview, the full one is the higher-fidelity
+# "creative" tier — both are appended after the two older previews in the
+# default order since they're the least production-tested here so far.
+#
+# TTS MODEL SELECTION (Single vs Multiple) — the person picks this in the
+# UI per-dub; see Session.tts_mode / Session.tts_models and
+# _resolve_tts_model_order. This list (TTS_MODELS) is only the DEFAULT
+# fallback order used when nothing was picked (or for any other
+# unspecified caller) — every actual /dub call resolves its own ordered
+# list and passes it into gemini_tts_with_fallback via the `models=`
+# argument; nothing about the underlying key-racing / auto-fallback engine
+# below changes because of this — it just walks whatever ordered list of
+# models it's handed.
+TTS_MODEL_CATALOG: List[Dict[str, str]] = [
+    {"id": "gemini-2.5-flash-preview-tts", "label": "Gemini 2.5 Flash Preview TTS"},
+    {"id": "gemini-3.1-flash-tts-preview", "label": "Gemini 3.1 Flash TTS Preview"},
+    {"id": "gemini-3.8-flash-tts", "label": "Gemini 3.8 Flash TTS"},
+    {"id": "gemini-3.8-flash-lite-tts", "label": "Gemini 3.8 Flash Lite TTS"},
+]
+TTS_MODEL_IDS: List[str] = [m["id"] for m in TTS_MODEL_CATALOG]
+
 TTS_MODELS: List[str] = [
     "gemini-2.5-flash-preview-tts",
     "gemini-3.1-flash-tts-preview",
-    "gemini-2.5-pro-preview-tts",
+    "gemini-3.8-flash-lite-tts",
+    "gemini-3.8-flash-tts",
 ]
 # Hard ceiling on a SINGLE (model, key) TTS attempt. Real-world evidence
 # (a fully-quota-exhausted account) showed genuinely-stuck requests just
@@ -356,6 +420,50 @@ CHARS_PER_SECOND_ESTIMATE = 13.0       # rough, language-agnostic speaking-rate
                                          # measured duration afterward
 
 
+def _resolve_tts_model_order(tts_mode: str, raw_models: str) -> List[str]:
+    """
+    Turns the person's UI choice (Single vs Multiple TTS model selection —
+    see index.html's "Voice Model" field) into the ordered model-fallback
+    list gemini_tts_with_fallback walks for THIS dub.
+
+      * SINGLE: exactly one model is picked up front. Every configured
+        Gemini key races on that ONE model first (existing key-race
+        behavior — unchanged). If that model is completely down across
+        every key (all keys busy/erroring), the pipeline still
+        automatically tries the remaining catalog models afterward — the
+        pre-existing "never-crash" guarantee is not weakened by picking a
+        single model, it only decides which model goes first.
+      * MULTIPLE: every model the person checked is tried, in the exact
+        order they picked them — a problem with one switches to the next
+        PICKED model immediately (no waiting on the one that's down).
+        Once every picked model has been exhausted, the remaining
+        (unpicked) catalog models are still tried as a final safety net,
+        exactly like SINGLE mode above.
+      * Anything malformed, unrecognized, or empty (including requests
+        from an older frontend that doesn't send these two fields at all)
+        falls back to the original default order (TTS_MODELS), completely
+        unchanged from before this feature existed.
+    """
+    picked: List[str] = []
+    valid_ids = set(TTS_MODEL_IDS)
+    for raw in re.split(r"[,\n]+", raw_models or ""):
+        mid = raw.strip()
+        if mid in valid_ids and mid not in picked:
+            picked.append(mid)
+
+    mode = (tts_mode or "single").strip().lower()
+    if mode not in ("single", "multi", "multiple"):
+        mode = "single"
+    if mode == "single":
+        picked = picked[:1]
+
+    if not picked:
+        return list(TTS_MODELS)  # nothing usable picked -> original default behavior
+
+    rest = [m for m in TTS_MODELS if m not in picked]
+    return picked + rest
+
+
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
 # One client per API key, created lazily and cached so key-rotation doesn't
@@ -409,6 +517,10 @@ class Session:
     video_duration: float = 0.0
     prepared: bool = False   # True once extract+probe+transcribe has finished
     ending_cta: str = ""     # optional custom CTA line, spoken at the very end
+    tts_mode: str = "single"                          # "single" | "multi" — UI choice
+    tts_models: List[str] = field(default_factory=lambda: list(TTS_MODELS))  # resolved
+                                                        # fallback order for THIS dub —
+                                                        # see _resolve_tts_model_order
 
 
 SESSIONS: Dict[str, Session] = {}
@@ -435,6 +547,8 @@ def save_session(sess: Session) -> None:
         "video_duration": sess.video_duration,
         "prepared": sess.prepared,
         "ending_cta": sess.ending_cta,
+        "tts_mode": sess.tts_mode,
+        "tts_models": sess.tts_models,
     }
     tmp = _session_file(sess.dir).with_suffix(".tmp")
     tmp.write_text(json.dumps(data), encoding="utf-8")
@@ -467,6 +581,8 @@ def load_session(session_id: str) -> Optional[Session]:
         video_duration=data.get("video_duration", 0.0),
         prepared=data.get("prepared", False),
         ending_cta=data.get("ending_cta", ""),
+        tts_mode=data.get("tts_mode", "single"),
+        tts_models=data.get("tts_models") or list(TTS_MODELS),
     )
     SESSIONS[session_id] = sess
     return sess
@@ -478,6 +594,10 @@ def _destroy_session(session_id: str) -> None:
     sdir = sess.dir if sess else (WORK_DIR / session_id)
     if sdir.exists():
         shutil.rmtree(sdir, ignore_errors=True)
+    gc.collect()  # promptly release large buffers (segments, PCM, etc.) —
+                  # cheap insurance on small-RAM instances (e.g. Render free
+                  # tier); the real memory-safety fix is FFMPEG_MAX_CONCURRENT
+                  # above, this is just a harmless extra nudge.
 
 
 def _sweep_stale_sessions() -> None:
@@ -520,13 +640,17 @@ def sse_done(obj: dict) -> Dict[str, str]:
 # FFmpeg / FFprobe helpers (async, disk-based)
 # --------------------------------------------------------------------------- #
 
+_ffmpeg_semaphore = asyncio.Semaphore(FFMPEG_MAX_CONCURRENT)
+
+
 async def _run(cmd: List[str]) -> str:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
+    async with _ffmpeg_semaphore:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
         err = (stderr or b"").decode("utf-8", "ignore").strip()
         raise RuntimeError(f"Command failed ({' '.join(cmd[:2])}...): {err[:800]}")
@@ -1233,12 +1357,34 @@ def write_wav_from_pcm(pcm_bytes: bytes, out_wav: Path) -> None:
         wf.writeframes(pcm_bytes)
 
 
+def _write_tts_audio(data: bytes, out_wav: Path) -> None:
+    """
+    Gemini's native TTS models don't all return the same container by
+    default: gemini-2.5-flash-preview-tts and gemini-3.1-flash-tts-preview
+    return headerless raw PCM (audio/l16), which is why write_wav_from_pcm
+    (the `wave` module) wraps it in a WAV header below. Google's newer
+    (Sept-2026) gemini-3.8-flash-tts / gemini-3.8-flash-lite-tts instead
+    return a FULLY-FORMED WAV file (audio/wav, real RIFF header) by
+    default for unary requests. Re-wrapping an already-WAV file in another
+    WAV header would corrupt it, so this is detected here (by sniffing the
+    RIFF/WAVE magic bytes) rather than assumed from the model name — this
+    keeps every downstream step (silence-trim, atempo, mux) working on a
+    normal on-disk WAV file exactly as before, unchanged, regardless of
+    which of the four models produced it.
+    """
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        out_wav.write_bytes(data)
+    else:
+        write_wav_from_pcm(data, out_wav)
+
+
 async def gemini_tts_with_fallback(
     text: str,
     voice_name: str,
     out_wav: Path,
     style_hint: str = "",
     api_keys: Optional[List[str]] = None,
+    models: Optional[List[str]] = None,
 ) -> AsyncGenerator[dict, None]:
     """
     Generate speech with Gemini native TTS for the FULL script in ONE call.
@@ -1248,6 +1394,12 @@ async def gemini_tts_with_fallback(
     _partition_keys_for_chunks — so simultaneous chunks don't all fight
     over the same key's per-minute quota). Defaults to every configured
     key when not given (the original single-request behavior).
+
+    `models` lets a caller hand this a SUBSET/reordering of TTS_MODEL_IDS
+    (the person's Single/Multiple TTS model choice for this dub — see
+    Session.tts_models / _resolve_tts_model_order). Defaults to the module
+    default TTS_MODELS order when not given, so every pre-existing caller
+    keeps behaving exactly as before this feature was added.
 
     Key insight from real-world logs: trying keys ONE AT A TIME, waiting up
     to TTS_CALL_TIMEOUT_SECONDS on each before moving to the next, means a
@@ -1318,8 +1470,9 @@ async def gemini_tts_with_fallback(
 
     last_err: Optional[Exception] = None
     multi_key = len(keys) > 1
+    model_order = models if models else TTS_MODELS
 
-    for model_name in TTS_MODELS:
+    for model_name in model_order:
         tasks = {
             asyncio.create_task(_attempt(model_name, api_key, key_idx))
             for key_idx, api_key in enumerate(keys)
@@ -1357,7 +1510,7 @@ async def gemini_tts_with_fallback(
 
         if winner:
             mname, pcm = winner
-            write_wav_from_pcm(pcm, out_wav)
+            _write_tts_audio(pcm, out_wav)
             yield sse_log(f"[SUCCESS] A key succeeded on '{mname}' — using it immediately.")
             yield {"_tts_result": mname}
             return
@@ -1368,7 +1521,7 @@ async def gemini_tts_with_fallback(
         )
 
     raise RuntimeError(
-        f"All {len(TTS_MODELS)} Gemini voice model(s) x {len(keys)} "
+        f"All {len(model_order)} Gemini voice model(s) x {len(keys)} "
         f"key(s) are currently busy or unavailable. Last error: {last_err}"
     )
 
@@ -1612,6 +1765,7 @@ async def _produce_one_chunk_audio(
     seg_dir: Path,
     tag: str,
     api_keys: Optional[List[str]] = None,
+    tts_models: Optional[List[str]] = None,
 ) -> AsyncGenerator[dict, None]:
     """
     Runs the FULL per-chunk voice pipeline for one piece of script:
@@ -1664,6 +1818,7 @@ async def _produce_one_chunk_audio(
             out_wav=raw_audio,
             style_hint=_tts_style_hint(target_language),
             api_keys=api_keys,
+            models=tts_models,
         ):
             if "_tts_result" in ev:
                 model_used = ev["_tts_result"]
@@ -1773,6 +1928,7 @@ async def _maybe_append_ending_cta(
         voice_name=sess.single_voice,
         out_wav=raw_cta,
         style_hint=_tts_style_hint(sess.target_language),
+        models=sess.tts_models,
     ):
         if "_tts_result" in ev:
             model_used = ev["_tts_result"]
@@ -1867,6 +2023,7 @@ async def synthesize_single_track(sess: Session) -> AsyncGenerator[dict, None]:
             async for ev in _produce_one_chunk_audio(
                 c_segments, target_seconds, sess.single_voice, sess.target_language,
                 seg_dir, tag=f"c{idx}", api_keys=key_pools[idx],
+                tts_models=sess.tts_models,
             ):
                 if "_chunk_result" in ev:
                     chunk_results[idx] = ev["_chunk_result"]
@@ -2130,6 +2287,7 @@ async def health() -> JSONResponse:
         "gemini_keys_configured": len(GEMINI_API_KEYS),
         "groq_keys_configured": len(GROQ_API_KEYS),
         "tts_models": TTS_MODELS,
+        "tts_model_catalog": TTS_MODEL_CATALOG,
         "voices": GEMINI_VOICE_NAMES,
         "whisper_model": WHISPER_MODEL,
         "translation_model": TRANSLATION_MODEL,
@@ -2203,6 +2361,8 @@ async def dub(
     target_language: str = Form(...),
     voice_name: str = Form("Kore"),
     ending_cta: str = Form(""),
+    tts_mode: str = Form("single"),
+    tts_models: str = Form(""),
 ):
     """
     MANUAL phase — only runs when the person presses the dub button after
@@ -2210,6 +2370,14 @@ async def dub(
     already uploaded and transcribed by /upload. `ending_cta`, when
     non-empty, adds one extra spoken line at the very end (see
     _maybe_append_ending_cta) — an optional, off-by-default feature.
+
+    `tts_mode` ("single" | "multi") + `tts_models` (comma-separated model
+    ids, in the order the person picked them) select which of the four
+    catalog TTS models (TTS_MODEL_CATALOG) this dub prefers — see
+    _resolve_tts_model_order for exactly how these turn into the ordered
+    fallback list. Omitting both keeps the original default behavior
+    (every model tried in the module's default order), so older frontends
+    that don't send these fields are unaffected.
     """
     if not GEMINI_API_KEYS:
         raise HTTPException(status_code=500, detail="No GEMINI_API_KEY(s) configured.")
@@ -2228,10 +2396,16 @@ async def dub(
     sess.target_language = (target_language or "").strip()
     sess.single_voice = voice
     sess.ending_cta = (ending_cta or "").strip()[:500]  # sane upper bound on a CTA line
+    sess.tts_mode = (tts_mode or "single").strip().lower()
+    sess.tts_models = _resolve_tts_model_order(tts_mode, tts_models)
     save_session(sess)
 
     async def event_stream() -> AsyncGenerator[dict, None]:
-        yield sse_log(f"[INFO] Dubbing session {session_id} into {sess.target_language} ({sess.single_voice})...")
+        yield sse_log(
+            f"[INFO] Dubbing session {session_id} into {sess.target_language} "
+            f"({sess.single_voice}) — voice-model priority: "
+            f"{' -> '.join(sess.tts_models)}."
+        )
         async for ev in run_dub(sess):
             yield ev
 
