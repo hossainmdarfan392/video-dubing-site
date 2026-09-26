@@ -196,85 +196,6 @@ body{
 }
 .control .chev{position:absolute;right:13px;top:50%;transform:translateY(-50%);color:var(--ink-soft);pointer-events:none;}
 
-/* Ending CTA toggle + text */
-.toggle-line{
-  display:flex;align-items:center;justify-content:space-between;gap:14px;
-  padding:12px 14px;border-radius:var(--radius-sm);
-  background:#f7fbff;border:1px solid #e3f0fb;
-}
-.toggle-line .tl-txt{display:flex;flex-direction:column;}
-.toggle-line .tl-txt strong{font-size:13.5px;font-weight:700;}
-.toggle-line .tl-txt span{font-size:11.5px;color:var(--ink-soft);}
-.switch{position:relative;width:44px;height:26px;flex-shrink:0;}
-.switch input{opacity:0;width:0;height:0;position:absolute;}
-.switch .slider{
-  position:absolute;inset:0;cursor:pointer;border-radius:999px;
-  background:#cdd9e8;transition:background .25s ease;
-}
-.switch .slider::before{
-  content:"";position:absolute;width:19px;height:19px;left:3.5px;top:3.5px;
-  border-radius:50%;background:#fff;transition:transform .25s ease;
-  box-shadow:0 2px 5px rgba(0,0,0,0.2);
-}
-.switch input:checked + .slider{background:linear-gradient(120deg,var(--sky),var(--sky-soft));}
-.switch input:checked + .slider::before{transform:translateX(18px);}
-
-/* TTS model selection: Single/Multiple segmented switch + model pills */
-.seg{
-  display:flex;background:#f7fbff;border:1px solid #e3f0fb;
-  border-radius:var(--radius-sm);padding:4px;gap:4px;
-}
-.seg button{
-  flex:1;border:none;background:transparent;cursor:pointer;
-  padding:9px 10px;border-radius:9px;font-family:inherit;
-  font-size:13px;font-weight:650;color:var(--ink-soft);
-  transition:background .2s ease,color .2s ease,box-shadow .2s ease;
-}
-.seg button.active{
-  background:#fff;color:var(--ink);
-  box-shadow:0 4px 12px -6px rgba(0,110,190,0.35);
-}
-.model-list{
-  display:flex;flex-direction:column;gap:8px;margin-top:10px;
-}
-.model-opt{
-  display:flex;align-items:center;gap:11px;
-  padding:10px 12px;border-radius:var(--radius-sm);
-  border:1px solid var(--line);background:#fbfdff;cursor:pointer;
-  transition:border-color .2s ease,background .2s ease,box-shadow .2s ease;
-  position:relative;
-}
-.model-opt:hover{border-color:var(--sky-soft);}
-.model-opt.picked{
-  border-color:var(--sky);background:#f2faff;
-  box-shadow:0 0 0 3px rgba(0,162,255,0.12);
-}
-.model-opt input{accent-color:var(--sky);width:16px;height:16px;flex-shrink:0;cursor:pointer;}
-.model-opt .mo-txt{display:flex;flex-direction:column;flex:1;min-width:0;}
-.model-opt .mo-txt strong{font-size:13.5px;font-weight:700;}
-.model-opt .mo-txt span{font-size:11px;color:var(--ink-soft);}
-.model-opt .mo-rank{
-  min-width:22px;height:22px;border-radius:999px;
-  display:none;align-items:center;justify-content:center;
-  font-size:11px;font-weight:800;color:#fff;
-  background:linear-gradient(120deg,var(--sky),var(--sky-soft));
-  flex-shrink:0;
-}
-.model-opt.picked .mo-rank{display:flex;}
-.model-hint{font-size:11.5px;color:var(--ink-soft);margin-top:8px;line-height:1.5;}
-.cta-text{
-  width:100%;margin-top:10px;resize:vertical;min-height:56px;
-  padding:12px 14px;border-radius:var(--radius-sm);
-  border:1px solid var(--line);background:#fbfdff;
-  font-size:14px;font-family:inherit;color:var(--ink);font-weight:500;line-height:1.4;
-  transition:border-color .2s ease,box-shadow .2s ease,background .2s ease;
-}
-.cta-text:focus{
-  outline:none;border-color:var(--sky);background:#fff;
-  box-shadow:0 0 0 4px rgba(0,162,255,0.14);
-}
-.cta-text.hidden{display:none;}
-
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
 @media (max-width:480px){.row2{grid-template-columns:1fr;}}
 
@@ -317,10 +238,6 @@ body{
    ============================================================ */
 .dash{display:grid;grid-template-columns:1fr;gap:20px;}
 
-.progress-block{display:none;}
-.progress-block.show{display:block;animation:progressReveal .35s ease;}
-@keyframes progressReveal{from{opacity:0;transform:translateY(-4px);}to{opacity:1;transform:translateY(0);}}
-
 .progress-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
 .progress-stage{font-size:13px;font-weight:650;color:var(--ink-soft);display:flex;align-items:center;gap:9px;min-width:0;}
 .progress-stage .st-txt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
@@ -333,7 +250,7 @@ body{
 .progress-fill{
   height:100%;width:0%;border-radius:999px;
   background:linear-gradient(90deg,var(--sky-deep),var(--sky) 55%,var(--sky-soft));
-  transition:width .55s cubic-bezier(.22,.61,.36,1),background .3s ease;
+  transition:width .55s cubic-bezier(.22,.61,.36,1);
   position:relative;overflow:hidden;
 }
 .progress-fill::after{
@@ -344,9 +261,6 @@ body{
 .progress-fill.active::after{animation:sheen 1.6s ease-in-out infinite;}
 @keyframes sheen{to{transform:translateX(100%);}}
 .progress-fill.paused{background:linear-gradient(90deg,#7c6bff,var(--sky));}
-.progress-fill.error{background:linear-gradient(90deg,#e0332f,#ff6b66);}
-.progress-fill.error::after{animation:none;}
-.progress-pct.error{color:#e0332f;}
 
 .progress-marks{display:flex;justify-content:space-between;margin-top:8px;font-size:10.5px;color:#9fb0c4;font-weight:600;}
 
@@ -404,6 +318,39 @@ body{
 
 .footer{margin-top:44px;text-align:center;color:#9fb0c4;font-size:12.5px;}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;}
+
+/* ============================================================
+   Engine toggle + TTS model multi-select (new)
+   ============================================================ */
+.engine-toggle{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:12px 14px;border-radius:var(--radius-sm);
+  background:#fbfdff;border:1px solid var(--line);margin-bottom:16px;
+}
+.engine-toggle .et-label{font-size:12.5px;font-weight:650;color:var(--ink-soft);}
+.et-switch{
+  position:relative;display:inline-flex;background:#eaf1f9;border-radius:999px;
+  padding:3px;gap:2px;
+}
+.et-switch button{
+  border:none;background:transparent;padding:7px 14px;border-radius:999px;
+  font-size:12.5px;font-weight:700;font-family:inherit;color:var(--ink-soft);cursor:pointer;
+  transition:background .2s ease,color .2s ease;
+}
+.et-switch button.active{background:#fff;color:var(--sky-deep);box-shadow:var(--shadow-sm);}
+
+.tts-models{display:flex;flex-direction:column;gap:8px;}
+.tts-model-row{
+  display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--radius-sm);
+  border:1px solid var(--line);background:#fbfdff;cursor:pointer;transition:border-color .2s ease,background .2s ease;
+}
+.tts-model-row:hover{border-color:#cfe8ff;}
+.tts-model-row.checked{border-color:var(--sky);background:#f2f9ff;}
+.tts-model-row input{accent-color:var(--sky);width:16px;height:16px;flex-shrink:0;}
+.tts-model-row .tmr-name{font-size:13.5px;font-weight:650;flex:1;}
+.tts-mode-row{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
+.tts-mode-row label{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);font-weight:600;cursor:pointer;}
+.tts-mode-row input{accent-color:var(--sky);}
 </style>
 </head>
 <body>
@@ -444,6 +391,15 @@ body{
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
         </svg>
         Source Media
+      </div>
+
+      <!-- Engine toggle: Gemini <-> Groq -->
+      <div class="engine-toggle">
+        <span class="et-label">Transcription &amp; Translation Engine</span>
+        <div class="et-switch" id="engineSwitch" role="tablist" aria-label="Engine selector">
+          <button type="button" data-engine="gemini" class="active" id="engineBtnGemini">Gemini</button>
+          <button type="button" data-engine="groq" id="engineBtnGroq">Groq</button>
+        </div>
       </div>
 
       <!-- RGB Glow Dropbox -->
@@ -526,16 +482,6 @@ body{
       </div>
 
       <div class="field">
-        <label>Voice Model (Single or Multiple)</label>
-        <div class="seg" id="ttsModeSeg">
-          <button type="button" id="ttsModeSingleBtn" class="active" data-mode="single">Single</button>
-          <button type="button" id="ttsModeMultiBtn" data-mode="multi">Multiple</button>
-        </div>
-        <div class="model-list" id="modelList"></div>
-        <div class="model-hint" id="modelHint"></div>
-      </div>
-
-      <div class="field">
         <label>Detected Source Language</label>
         <span class="src-badge detecting" id="srcBadge">
           <svg class="spin-i" id="srcSpin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
@@ -546,18 +492,12 @@ body{
       </div>
 
       <div class="field">
-        <div class="toggle-line">
-          <div class="tl-txt">
-            <strong>Ending CTA</strong>
-            <span>Speak a custom line at the very end (e.g. "Subscribe!")</span>
-          </div>
-          <label class="switch" title="Toggle ending CTA">
-            <input type="checkbox" id="ctaToggle" />
-            <span class="slider"></span>
-          </label>
+        <label>TTS Voice Model(s)</label>
+        <div class="tts-mode-row">
+          <label><input type="radio" name="ttsMode" id="ttsModeSingle" value="single" checked> Single model</label>
+          <label><input type="radio" name="ttsMode" id="ttsModeMulti" value="multi"> Multiple (fallback chain)</label>
         </div>
-        <textarea id="ctaText" class="cta-text hidden" maxlength="500" rows="2"
-          placeholder="e.g. আমাদের চ্যানেল সাবস্ক্রাইব করে রাখুন"></textarea>
+        <div class="tts-models" id="ttsModelList"></div>
       </div>
 
       <button class="btn" id="generateBtn" disabled>
@@ -579,8 +519,8 @@ body{
       </div>
 
       <div class="dash">
-        <!-- Progress: hidden until a run actually starts (see progressBlock JS) -->
-        <div id="progressBlock" class="progress-block">
+        <!-- Progress -->
+        <div>
           <div class="progress-head">
             <div class="progress-stage">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -640,12 +580,7 @@ body{
 /* ============================================================
    Config
    ============================================================ */
-// Backend Routing Restriction: every API request from this frontend must
-// go exclusively to this Render backend instance — never to any other
-// host. Every fetch/XHR call below builds its URL by prepending this
-// constant (e.g. `${BACKEND_URL}/upload`), so the frontend seamlessly and
-// exclusively communicates with the Render backend.
-const BACKEND_URL = "https://video-dubing-site.onrender.com";
+const API_BASE = "https://video-dubing-site.onrender.com";
 
 /* All 30 official Gemini native-TTS prebuilt voices, with Google's own
    one-word style tag for each (ai.google.dev/gemini-api/docs/speech-generation). */
@@ -683,16 +618,14 @@ const VOICES = [
 ];
 const DEFAULT_VOICE = "Kore";
 
-/* The four Gemini native-TTS models the backend can generate voice with
-   (mirrors TTS_MODEL_CATALOG in app.py). "hint" is just a short one-line
-   description shown under each option in the UI. */
-const TTS_MODEL_CATALOG = [
-  { id: "gemini-2.5-flash-preview-tts", label: "Gemini 2.5 Flash Preview TTS", hint: "An earlier preview text-to-speech option." },
-  { id: "gemini-3.1-flash-tts-preview", label: "Gemini 3.1 Flash TTS Preview", hint: "An expressive preview model supporting multiple languages." },
-  { id: "gemini-3.8-flash-tts",         label: "Gemini 3.8 Flash TTS",         hint: "A newer voice generation model focused on character voices and creative audio." },
-  { id: "gemini-3.8-flash-lite-tts",    label: "Gemini 3.8 Flash Lite TTS",    hint: "A lighter, faster variant of the 3.8 audio generation model." }
+/* The 4 TTS engine models the backend supports (single or multi-select). */
+const TTS_MODELS = [
+  { id: "gemini-2.5-flash-preview-tts", label: "Gemini 2.5 Flash Preview TTS" },
+  { id: "gemini-3.1-flash-tts-preview", label: "Gemini 3.1 Flash TTS Preview" },
+  { id: "gemini-3.8-flash-tts",         label: "Gemini 3.8 Flash TTS" },
+  { id: "gemini-3.8-flash-tts-lite",    label: "Gemini 3.8 Flash Lite TTS" }
 ];
-const DEFAULT_TTS_MODEL = TTS_MODEL_CATALOG[0].id;
+const DEFAULT_TTS_MODEL = TTS_MODELS[0].id;
 
 /* ============================================================
    Element refs
@@ -709,14 +642,7 @@ const fileClear = $("fileClear");
 
 const targetLang = $("targetLang");
 const voiceSelect = $("voiceSelect");
-const ctaToggle = $("ctaToggle");
-const ctaText = $("ctaText");
 const generateBtn = $("generateBtn");
-
-const ttsModeSingleBtn = $("ttsModeSingleBtn");
-const ttsModeMultiBtn = $("ttsModeMultiBtn");
-const modelList = $("modelList");
-const modelHint = $("modelHint");
 
 const srcBadge = $("srcBadge");
 const srcText = $("srcText");
@@ -725,7 +651,6 @@ const srcSpin = $("srcSpin");
 const stageText = $("stageText");
 const pctText = $("pctText");
 const progressFill = $("progressFill");
-const progressBlock = $("progressBlock");
 const consoleEl = $("console");
 const liveDot = $("liveDot");
 const liveText = $("liveText");
@@ -737,6 +662,13 @@ const downloadBtn = $("downloadBtn");
 
 const serverDot = $("serverDot");
 const serverStatusText = $("serverStatusText");
+
+const engineSwitch = $("engineSwitch");
+const engineBtnGemini = $("engineBtnGemini");
+const engineBtnGroq = $("engineBtnGroq");
+const ttsModeSingle = $("ttsModeSingle");
+const ttsModeMulti = $("ttsModeMulti");
+const ttsModelList = $("ttsModelList");
 
 /* ============================================================
    App state
@@ -751,8 +683,9 @@ const state = {
   abort: null,               // AbortController for the current SSE fetch
   targetLanguage: "English",
   consoleCleared: false,
+  engine: "gemini",          // "gemini" | "groq" — transcription+translation
   ttsMode: "single",         // "single" | "multi"
-  ttsModels: [DEFAULT_TTS_MODEL]   // priority order: picked first = tried first
+  ttsModels: [DEFAULT_TTS_MODEL]
 };
 
 /* ============================================================
@@ -815,6 +748,59 @@ function setProgress(percent, message){
 function setStage(txt){ stageText.textContent = txt; }
 
 /* ============================================================
+   Engine toggle (Gemini <-> Groq)
+   ============================================================ */
+function setEngine(eng){
+  state.engine = (eng === "groq") ? "groq" : "gemini";
+  engineBtnGemini.classList.toggle("active", state.engine === "gemini");
+  engineBtnGroq.classList.toggle("active", state.engine === "groq");
+  pushLog(`[SYS] Engine set to ${state.engine === "gemini" ? "Gemini" : "Groq"} for transcription + translation.`, "l-sys");
+}
+engineBtnGemini.addEventListener("click", ()=> setEngine("gemini"));
+engineBtnGroq.addEventListener("click", ()=> setEngine("groq"));
+
+/* ============================================================
+   TTS model single/multi select
+   ============================================================ */
+function buildTtsModelList(){
+  ttsModelList.innerHTML = "";
+  TTS_MODELS.forEach((m)=>{
+    const row = document.createElement("label");
+    row.className = "tts-model-row";
+    row.innerHTML = `
+      <input type="${state.ttsMode === "single" ? "radio" : "checkbox"}" name="ttsModelPick" value="${m.id}">
+      <span class="tmr-name">${esc(m.label)}</span>
+    `;
+    const input = row.querySelector("input");
+    input.checked = state.ttsModels.includes(m.id);
+    row.classList.toggle("checked", input.checked);
+    input.addEventListener("change", ()=> onTtsModelPick());
+    ttsModelList.appendChild(row);
+  });
+}
+function onTtsModelPick(){
+  const inputs = Array.from(ttsModelList.querySelectorAll("input"));
+  state.ttsModels = inputs.filter(i=>i.checked).map(i=>i.value);
+  if(state.ttsModels.length === 0){
+    // Never allow zero models selected — fall back to the first one.
+    inputs[0].checked = true;
+    state.ttsModels = [inputs[0].value];
+  }
+  inputs.forEach(i=> i.closest(".tts-model-row").classList.toggle("checked", i.checked));
+}
+ttsModeSingle.addEventListener("change", ()=>{
+  if(!ttsModeSingle.checked) return;
+  state.ttsMode = "single";
+  state.ttsModels = [state.ttsModels[0] || DEFAULT_TTS_MODEL];
+  buildTtsModelList();
+});
+ttsModeMulti.addEventListener("change", ()=>{
+  if(!ttsModeMulti.checked) return;
+  state.ttsMode = "multi";
+  buildTtsModelList();
+});
+
+/* ============================================================
    Source language badge
    ============================================================ */
 function lockSourceLanguage(lang){
@@ -846,79 +832,6 @@ function buildMainVoiceSelect(){
 }
 
 /* ============================================================
-   TTS model selection (Single or Multiple)
-   ============================================================
-   Single: exactly one model is picked; every configured Gemini key races
-   on it first, and if it's totally down the backend still automatically
-   falls through to the other three models as a safety net.
-   Multiple: however many models are checked, tried in the order picked —
-   a problem with one switches to the next PICKED model immediately, then
-   falls through to any unpicked models as a final backup. */
-function renderModelList(){
-  modelList.innerHTML = "";
-  const isMulti = state.ttsMode === "multi";
-
-  TTS_MODEL_CATALOG.forEach(m=>{
-    const idx = state.ttsModels.indexOf(m.id);
-    const picked = idx !== -1;
-
-    const row = document.createElement("label");
-    row.className = "model-opt" + (picked ? " picked" : "");
-
-    const input = document.createElement("input");
-    input.type = isMulti ? "checkbox" : "radio";
-    if(!isMulti) input.name = "ttsModelSingle";
-    input.checked = picked;
-    input.addEventListener("change", ()=>onModelPick(m.id));
-
-    const rank = document.createElement("span");
-    rank.className = "mo-rank";
-    if(isMulti && picked) rank.textContent = String(idx + 1);
-
-    const txt = document.createElement("span");
-    txt.className = "mo-txt";
-    txt.innerHTML = `<strong>${esc(m.label)}</strong><span>${esc(m.hint)}</span>`;
-
-    row.appendChild(input);
-    row.appendChild(txt);
-    row.appendChild(rank);
-    modelList.appendChild(row);
-  });
-
-  modelHint.textContent = isMulti
-    ? "Checked models are tried in the order you picked them — a problem with one switches to the next immediately. Any unchecked models stay on as a final backup."
-    : "This model is tried first with every configured key at once. If it's completely unavailable, the other models are tried automatically as backup.";
-}
-
-function onModelPick(modelId){
-  if(state.ttsMode === "single"){
-    state.ttsModels = [modelId];
-  }else{
-    const i = state.ttsModels.indexOf(modelId);
-    if(i === -1) state.ttsModels.push(modelId);       // newly checked -> goes last in priority
-    else state.ttsModels.splice(i, 1);                 // unchecked -> removed from priority
-  }
-  renderModelList();
-}
-
-function setTtsMode(mode){
-  if(state.ttsMode === mode) return;
-  state.ttsMode = mode;
-  ttsModeSingleBtn.classList.toggle("active", mode === "single");
-  ttsModeMultiBtn.classList.toggle("active", mode === "multi");
-  if(mode === "single" && state.ttsModels.length > 1){
-    state.ttsModels = [state.ttsModels[0]];             // keep just the top priority pick
-  }
-  if(state.ttsModels.length === 0){
-    state.ttsModels = [DEFAULT_TTS_MODEL];
-  }
-  renderModelList();
-}
-
-ttsModeSingleBtn.addEventListener("click", ()=>setTtsMode("single"));
-ttsModeMultiBtn.addEventListener("click", ()=>setTtsMode("multi"));
-
-/* ============================================================
    File handling
    ============================================================ */
 function acceptFile(file){
@@ -930,7 +843,7 @@ function acceptFile(file){
   // uploaded-but-not-yet-dubbed) cleanly cancels/discards that old one.
   abortCurrentOperation();
   if(state.sessionId && !state.running){
-    fetch(`${BACKEND_URL}/session/${encodeURIComponent(state.sessionId)}`, { method:"DELETE" }).catch(()=>{});
+    fetch(`${API_BASE}/session/${encodeURIComponent(state.sessionId)}`, { method:"DELETE" }).catch(()=>{});
   }
   resetPipelineState();
 
@@ -950,7 +863,7 @@ function acceptFile(file){
 function clearFile(){
   abortCurrentOperation();
   if(state.sessionId && !state.running){
-    fetch(`${BACKEND_URL}/session/${encodeURIComponent(state.sessionId)}`, { method:"DELETE" }).catch(()=>{});
+    fetch(`${API_BASE}/session/${encodeURIComponent(state.sessionId)}`, { method:"DELETE" }).catch(()=>{});
   }
   resetPipelineState();
   state.file = null;
@@ -958,9 +871,6 @@ function clearFile(){
   fileChip.classList.remove("show");
   dropWrap.classList.remove("has-file");
   resultPanel.classList.remove("show");
-  progressBlock.classList.remove("show");
-  progressFill.classList.remove("active", "paused", "error");
-  pctText.classList.remove("error");
   resetConsole();
   refreshGenerateState();
 }
@@ -1073,9 +983,7 @@ function beginRun(phase){
   state.phase = phase; // "preparing" | "dubbing"
   generateBtn.classList.add("loading");
   refreshGenerateState();
-  progressBlock.classList.add("show");
-  progressFill.classList.remove("paused", "error");
-  pctText.classList.remove("error");
+  progressFill.classList.remove("paused");
   progressFill.classList.add("active");
   setLive(true);
 }
@@ -1094,12 +1002,6 @@ function failRun(reason, keepSession){
   pushLog("[WARN] " + (reason || "Run stopped.") + " State reset.", "l-warn");
   if(state.abort){ try{ state.abort.abort(); }catch(_){} }
   if(state.uploadXhr){ try{ state.uploadXhr.abort(); }catch(_){} }
-  // Make the failure visually unmistakable on the bar itself, not just in
-  // the log — real-time SSE progress, so a red bar means it's ACTUALLY
-  // stuck/failed right now, not a guess.
-  progressFill.classList.remove("active");
-  progressFill.classList.add("error");
-  pctText.classList.add("error");
   if(keepSession && state.sessionId && state.prepared){
     endRun("ready");
   }else{
@@ -1205,6 +1107,8 @@ function presentResult(sessionId, meta){
   if(meta.source_language) tags.push(["Source", meta.source_language]);
   if(meta.target_language) tags.push(["Target", meta.target_language]);
   if(typeof meta.segments !== "undefined") tags.push(["Segments", meta.segments]);
+  if(meta.voice_model) tags.push(["Voice model", meta.voice_model]);
+  if(typeof meta.speed_ratio !== "undefined") tags.push(["Speed", `${meta.speed_ratio}x`]);
   tags.forEach(([k,v])=>{
     const el = document.createElement("span");
     el.className = "meta-tag";
@@ -1213,7 +1117,7 @@ function presentResult(sessionId, meta){
   });
 
   resultPanel.classList.add("show");
-  const url = `${BACKEND_URL}/download/${encodeURIComponent(sessionId)}`;
+  const url = `${API_BASE}/download/${encodeURIComponent(sessionId)}`;
   resultVideo.src = url;
   resultVideo.load();
   downloadBtn.href = url;
@@ -1227,12 +1131,13 @@ function presentResult(sessionId, meta){
 function uploadAndPrepare(file){
   beginRun("uploading");
   setProgress(0, "Uploading…");
-  pushLog(`[SYS] Uploading "${file.name}" (${fmtBytes(file.size)})…`, "l-sys");
+  pushLog(`[SYS] Uploading "${file.name}" (${fmtBytes(file.size)}) · Engine: ${state.engine}…`, "l-sys");
 
   const xhr = new XMLHttpRequest();
   state.uploadXhr = xhr;
   const fd = new FormData();
   fd.append("file", file);
+  fd.append("engine", state.engine);
 
   xhr.upload.addEventListener("progress", (e)=>{
     if(!e.lengthComputable) return;
@@ -1269,7 +1174,7 @@ function uploadAndPrepare(file){
   });
   xhr.addEventListener("abort", ()=>{ state.uploadXhr = null; });
 
-  xhr.open("POST", `${BACKEND_URL}/upload`);
+  xhr.open("POST", `${API_BASE}/upload`);
   xhr.send(fd);
 }
 
@@ -1278,7 +1183,7 @@ async function prepareSession(sessionId){
   refreshGenerateState();
   state.abort = new AbortController();
   try{
-    const res = await fetch(`${BACKEND_URL}/prepare/${encodeURIComponent(sessionId)}`, {
+    const res = await fetch(`${API_BASE}/prepare/${encodeURIComponent(sessionId)}?engine=${encodeURIComponent(state.engine)}`, {
       method: "GET", signal: state.abort.signal,
     });
     await readSSE(res, handlePrepareEvent);
@@ -1302,25 +1207,22 @@ async function startDub(){
   if(!state.sessionId || !state.prepared || state.running) return;
 
   state.targetLanguage = targetLang.value;
-  const ctaValue = (ctaToggle.checked && ctaText.value.trim()) ? ctaText.value.trim() : "";
   beginRun("dubbing");
   resultPanel.classList.remove("show");
   setProgress(0, "Starting dub…");
-  pushLog(`[SYS] Dubbing into ${targetLang.value} · Voice: ${voiceSelect.value}`, "l-sys");
-  pushLog(`[SYS] Voice model (${state.ttsMode === "multi" ? "Multiple" : "Single"}): ${state.ttsModels.join(" -> ")}`, "l-sys");
-  if(ctaValue) pushLog(`[SYS] Ending CTA enabled: "${ctaValue}"`, "l-sys");
+  const modelsCsv = state.ttsModels.join(",");
+  pushLog(`[SYS] Dubbing into ${targetLang.value} · Voice: ${voiceSelect.value} · Engine: ${state.engine} · TTS model(s): ${modelsCsv}`, "l-sys");
 
   const fd = new FormData();
   fd.append("session_id", state.sessionId);
   fd.append("target_language", targetLang.value);
   fd.append("voice_name", voiceSelect.value);
-  fd.append("ending_cta", ctaValue);
-  fd.append("tts_mode", state.ttsMode);
-  fd.append("tts_models", state.ttsModels.join(","));
+  fd.append("engine", state.engine);
+  fd.append("tts_models", modelsCsv);
 
   state.abort = new AbortController();
   try{
-    const res = await fetch(`${BACKEND_URL}/dub`, { method:"POST", body:fd, signal:state.abort.signal });
+    const res = await fetch(`${API_BASE}/dub`, { method:"POST", body:fd, signal:state.abort.signal });
     await readSSE(res, handleDubEvent);
     if(state.phase === "dubbing"){
       pushLog("[WARN] Stream closed unexpectedly before completion.", "l-warn");
@@ -1337,17 +1239,12 @@ async function startDub(){
 
 generateBtn.addEventListener("click", startDub);
 
-ctaToggle.addEventListener("change", ()=>{
-  ctaText.classList.toggle("hidden", !ctaToggle.checked);
-  if(ctaToggle.checked) ctaText.focus();
-});
-
 /* ============================================================
    Backend health check
    ============================================================ */
 async function checkHealth(){
   try{
-    const res = await fetch(`${BACKEND_URL}/health`, { method:"GET" });
+    const res = await fetch(`${API_BASE}/health`, { method:"GET" });
     const j = await res.json();
     if(j.status === "ok"){
       const hasKeys = (j.gemini_keys_configured|0) > 0 && (j.groq_keys_configured|0) > 0;
@@ -1367,7 +1264,7 @@ async function checkHealth(){
    Init
    ============================================================ */
 buildMainVoiceSelect();
-renderModelList();
+buildTtsModelList();
 resetConsole();
 refreshGenerateState();
 checkHealth();
