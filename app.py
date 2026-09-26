@@ -51,23 +51,26 @@ audio engineer instead of guessing:
   1. SILENCE TRIM (adaptive ladder): every internal silent gap longer than
      a threshold is trimmed down (FFmpeg `silenceremove`, real audio-level
      detection — not a timestamp guess). The ladder starts at 500ms and
-     only steps down (500 -> 400 -> 280ms, never lower) if needed to keep
-     the required speed-up in a comfortable range — going lower starts
-     cutting into natural between-sentence pauses, which makes the voice
-     sound rushed/mashed-together rather than helping. This only ever
-     trims SILENCE, never speech.
+     only steps down (500 -> 400ms, never lower) if needed to keep the
+     required speed-up in a comfortable range — every threshold this
+     pipeline ever uses is strictly kept between 400ms and 500ms; going
+     lower starts cutting into natural between-sentence pauses, which
+     makes the voice sound rushed/mashed-together rather than helping.
+     This only ever trims SILENCE, never speech.
   2. DURATION MATCH: the trimmed speech duration is compared against the
      ACTUAL target duration for that piece (the real video, or that
      chunk's own time-span within it — not the sum of Whisper segment
      timings) and a single pitch-preserving `atempo` speed-up is applied
-     if (and only if) it's too long — capped HARD at MAX_SPEED_RATIO
-     (1.20x). Speech is NEVER slowed below its natural 1.0x pace, and
-     never sped up past 1.20x either — both sound unnatural. If 1.20x
+     if (and only if) it's too long — strictly constrained between
+     MIN_SPEED_RATIO and MAX_SPEED_RATIO (1.15x-1.30x). Speech that
+     already fits its slot is kept at natural 1.0x pace (no atempo at
+     all), and once a speed-up IS applied it is never allowed below
+     1.15x or above 1.30x — both extremes sound unnatural. If 1.30x
      alone wouldn't be enough, the SCRIPT is shortened instead (a rough
      pre-TTS estimate flags this proactively, and the actual measured
      result triggers one more shortened regeneration if still needed —
      see _produce_one_chunk_audio and MAX_SHORTEN_ATTEMPTS). In the rare
-     case even that isn't enough, speed still never exceeds 1.20x — any
+     case even that isn't enough, speed still never exceeds 1.30x — any
      tiny remainder is covered by extending the video's ending afterward
      (see "Speed ceiling" below), never by cutting off speech. `atempo`
      (FFmpeg native) is used deliberately over `rubberband`: real
@@ -93,17 +96,19 @@ each piece finishes, its own SSE log/progress events stream through live
 one continuous track (FFmpeg concat demuxer, lossless) before the final
 duration-vs-video sanity check and mux.
 
-Speed ceiling & script-shortening
--------------------------------------
-Speed is capped at MAX_SPEED_RATIO (1.20x) — never exceeded. If a chunk's
-speech looks (or measures) too long for its slot even after silence-trim,
-the SCRIPT is shortened via Groq rather than pushing the voice faster:
-once proactively (character-count estimate, before the first TTS call)
-and once more reactively (measured result, with a regenerated TTS call)
-if still needed — MAX_SHORTEN_ATTEMPTS bounds this to at most 2 tries, no
-unbounded loop. If a chunk is still over the cap after that (rare), speed
-is held at exactly 1.20x and the small remainder is covered by extending
-that chunk's video span afterward — see the overflow safety-net in
+Speed floor & ceiling, script-shortening
+-------------------------------------------
+Speed is strictly constrained between MIN_SPEED_RATIO and MAX_SPEED_RATIO
+(1.15x-1.30x) whenever a speed-up is actually applied — never below 1.15x,
+never above 1.30x. If a chunk's speech looks (or measures) too long for
+its slot even after silence-trim, the SCRIPT is shortened via Groq rather
+than pushing the voice faster: once proactively (character-count
+estimate, before the first TTS call) and once more reactively (measured
+result, with a regenerated TTS call) if still needed — MAX_SHORTEN_ATTEMPTS
+bounds this to at most 2 tries, no unbounded loop. If a chunk is still
+over the cap after that (rare), speed is held at exactly 1.30x and the
+small remainder is covered by extending that chunk's video span afterward
+— see the overflow safety-net in
 synthesize_single_track — never by cutting off speech.
 
 Optional ending CTA
@@ -352,13 +357,15 @@ TRANSLATE_CHUNK_RETRIES = 2
 # silence to trim before computing the final speed ratio. We start at a
 # generous 500ms (safe — never eats into a natural mid-sentence breath) and
 # only step down if the video is short enough that 500ms isn't enough to
-# bring the speed-up into a comfortable range. 280ms is the floor — NOT
-# 120ms: trimming a natural between-sentence pause down that far starts
-# making the voice-over sound rushed/mashed-together ("broken"), which is
-# far more noticeable than a slightly bigger, well-preserved speed-up. All
-# rungs are tried CONCURRENTLY (they all read from the same raw source) so
-# this ladder costs one round-trip, not five sequential ones.
-SILENCE_TRIM_LADDER_MS: List[int] = [500, 400, 280]
+# bring the speed-up into a comfortable range. 400ms is the STRICT floor —
+# every silence-trim threshold this pipeline ever uses is kept between
+# 400ms and 500ms, inclusive, and NEVER goes lower than 400ms: trimming a
+# natural between-sentence pause down further starts making the voice-over
+# sound rushed/mashed-together ("broken"), which is far more noticeable
+# than a slightly bigger, well-preserved speed-up. All rungs are tried
+# CONCURRENTLY (they all read from the same raw source) so this ladder
+# costs one round-trip, not several sequential ones.
+SILENCE_TRIM_LADDER_MS: List[int] = [500, 400]
 SILENCE_TRIM_FLOOR_MS: int = SILENCE_TRIM_LADDER_MS[-1]
 SILENCE_DB_THRESHOLD = -32.0  # dB below which audio is treated as silence.
 COMFORTABLE_MAX_RATIO = 1.2   # stop shrinking the trim window once we're
@@ -400,14 +407,24 @@ TTS_CHUNK_MAX_CHARS = 2000             # PRIMARY (and only) split trigger — a
                                          # quota even for token-hungry scripts
                                          # (Bengali, etc.)
 
-# --- Speed ceiling + script-shortening (never sound sped-up) -------------- #
-# Speeding audio up too far starts sounding audibly unnatural. Rather than
-# ever exceeding a modest ceiling, the SCRIPT is shortened instead: a
-# rough pre-TTS character-count estimate flags a chunk likely to run long
-# BEFORE spending a request on it (proactive), and the ACTUAL measured
-# result after TTS triggers one more shortening + regeneration pass if
-# it's still over (reactive) — see _produce_one_chunk_audio.
-MAX_SPEED_RATIO = 1.20                 # hard target ceiling; the pipeline
+# --- Speed floor/ceiling + script-shortening (never sound sped-up) -------- #
+# Speeding audio up too far starts sounding audibly unnatural, and a
+# barely-there speed-up (e.g. 1.01x) is inaudible/pointless. Whenever a
+# speed-up (atempo) actually needs to be applied, it is STRICTLY
+# constrained to the [MIN_SPEED_RATIO, MAX_SPEED_RATIO] band — never below
+# MIN_SPEED_RATIO and never above MAX_SPEED_RATIO. Rather than ever
+# exceeding the ceiling, the SCRIPT is shortened instead: a rough pre-TTS
+# character-count estimate flags a chunk likely to run long BEFORE
+# spending a request on it (proactive), and the ACTUAL measured result
+# after TTS triggers one more shortening + regeneration pass if it's
+# still over (reactive) — see _produce_one_chunk_audio.
+MIN_SPEED_RATIO = 1.15                 # hard floor for any APPLIED speed-up;
+                                         # speech that fits within its slot
+                                         # stays at natural 1.0x (no atempo
+                                         # at all) — this floor only governs
+                                         # the case where a speed-up is
+                                         # actually being applied
+MAX_SPEED_RATIO = 1.30                 # hard target ceiling; the pipeline
                                          # actively shortens the script rather
                                          # than exceeding this
 MAX_SHORTEN_ATTEMPTS = 2               # 1 proactive + 1 reactive — bounded,
@@ -526,6 +543,70 @@ class Session:
 SESSIONS: Dict[str, Session] = {}
 SESSION_TTL_SECONDS = 60 * 60  # 1h safety sweep for abandoned sessions.
 
+# --------------------------------------------------------------------------- #
+# Strict WORK_DIR session isolation
+# --------------------------------------------------------------------------- #
+# Every session lives in its own dedicated sub-directory under WORK_DIR,
+# named after a server-generated 12-character hex session_id (see /upload).
+# Concurrent users/accounts never share a directory, a temp filename, or an
+# in-memory Session object — each session_id maps to exactly one Session and
+# exactly one folder. Two extra safeguards close the remaining edge cases:
+#   1. SESSION_ID_RE strictly validates any session_id that arrives from the
+#      network (path params / form fields) BEFORE it is ever joined onto
+#      WORK_DIR, so a malformed or hostile id (e.g. containing "../") can
+#      never be used to read/write outside a session's own folder.
+#   2. SESSION_LOCKS gives each session_id its own asyncio.Lock so that even
+#      if the SAME session_id is hit by two overlapping requests (e.g. a
+#      double-click on Generate Dub), the two pipeline runs are serialized
+#      instead of both writing into the same scratch files at once — a
+#      different session_id is a completely different lock and its pipeline
+#      runs fully concurrently, unaffected by any other session or account.
+SESSION_ID_RE = re.compile(r"^[0-9A-Fa-f]{8,32}$")
+SESSION_LOCKS: Dict[str, asyncio.Lock] = {}
+
+
+def _validate_session_id(session_id: str) -> str:
+    """
+    Reject any session_id that isn't exactly the server-generated hex
+    format before it's used to build a filesystem path — the first and
+    most important barrier for strict per-session/per-account isolation
+    (prevents path traversal and any cross-session file access).
+    """
+    if not session_id or not SESSION_ID_RE.match(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id.")
+    return session_id
+
+
+def _safe_session_dir(session_id: str) -> Path:
+    """
+    Resolve session_id to its dedicated folder under WORK_DIR and verify —
+    defense in depth, beyond the regex check above — that the resolved
+    path is actually still inside WORK_DIR before any file operation ever
+    touches it. Every endpoint that takes a session_id from the network
+    should use this instead of building the path by hand.
+    """
+    _validate_session_id(session_id)
+    sdir = (WORK_DIR / session_id).resolve()
+    try:
+        sdir.relative_to(WORK_DIR)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid session_id.")
+    return sdir
+
+
+def _session_lock(session_id: str) -> asyncio.Lock:
+    """
+    One lock per session_id, created lazily — guarantees that only ONE
+    pipeline run (prepare or dub) is ever touching a given session's files
+    at a time, regardless of how many OTHER sessions (other users/accounts)
+    are running fully concurrently alongside it.
+    """
+    lock = SESSION_LOCKS.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        SESSION_LOCKS[session_id] = lock
+    return lock
+
 
 def _session_file(sdir: Path) -> Path:
     return sdir / "session.json"
@@ -559,6 +640,10 @@ def load_session(session_id: str) -> Optional[Session]:
     """Return a session from RAM, or rehydrate it from disk if needed."""
     if session_id in SESSIONS:
         return SESSIONS[session_id]
+    if not session_id or not SESSION_ID_RE.match(session_id):
+        # Strict isolation: a malformed/hostile id never even gets to touch
+        # the filesystem — treated exactly like an unknown session.
+        return None
     sdir = WORK_DIR / session_id
     sfile = _session_file(sdir)
     if not sfile.exists():
@@ -591,6 +676,7 @@ def load_session(session_id: str) -> Optional[Session]:
 def _destroy_session(session_id: str) -> None:
     """Remove a session from RAM and delete ALL its scratch files from disk."""
     sess = SESSIONS.pop(session_id, None)
+    SESSION_LOCKS.pop(session_id, None)
     sdir = sess.dir if sess else (WORK_DIR / session_id)
     if sdir.exists():
         shutil.rmtree(sdir, ignore_errors=True)
@@ -1646,7 +1732,7 @@ async def _adaptive_silence_trim(
     raw_path: Path, video_duration: float, seg_dir: Path,
 ) -> Tuple[Path, float, int, List[dict]]:
     """
-    Try every minimum-silence window (500 -> 280ms) CONCURRENTLY — they all
+    Try every minimum-silence window (500 -> 400ms) CONCURRENTLY — they all
     read from the same original raw audio independently, so there's no
     reason to run them one after another. Picks the LEAST aggressive
     (largest ms) rung whose trimmed duration is comfortably close to the
@@ -1770,8 +1856,10 @@ async def _produce_one_chunk_audio(
     """
     Runs the FULL per-chunk voice pipeline for one piece of script:
     Gemini TTS -> adaptive silence-trim ladder -> speed match against
-    `target_seconds`, capped hard at MAX_SPEED_RATIO (1.20x) — speech is
-    NEVER slowed below 1.0x, and never sped up past the cap either. If a
+    `target_seconds`, strictly constrained between MIN_SPEED_RATIO and
+    MAX_SPEED_RATIO (1.15x-1.30x) whenever a speed-up is applied — speech
+    that already fits is NEVER slowed below 1.0x, and once a speed-up is
+    applied it never goes below 1.15x or past the 1.30x cap either. If a
     PROACTIVE character-count estimate suggests the script is too long
     for the slot, it's shortened BEFORE the first TTS call; if the
     ACTUAL measured result still comes back over the cap, it's shortened
@@ -1852,12 +1940,20 @@ async def _produce_one_chunk_audio(
             applied_ratio = 1.0
             break
 
-        # HARD RULE #2: speed is never pushed past MAX_SPEED_RATIO — if a
-        # single pass gets there, apply it and we're done.
+        # HARD RULE #2: whenever a speed-up is actually applied, it is
+        # STRICTLY constrained to [MIN_SPEED_RATIO, MAX_SPEED_RATIO]
+        # (1.15x-1.30x) — never pushed past the ceiling, and never left
+        # below the floor either (a barely-there speed-up is rounded UP to
+        # the 1.15x floor instead of applying the raw, smaller ratio).
         if ratio <= MAX_SPEED_RATIO:
-            applied_ratio = ratio
-            yield sse_log(f"[INFO] Speech is longer than this segment -> speeding audio up {ratio:.3f}x (pitch preserved).")
-            await time_stretch_to_duration(trimmed_path, target_seconds, fitted_path, False)
+            applied_ratio = max(ratio, MIN_SPEED_RATIO)
+            effective_target = trimmed_dur / applied_ratio
+            yield sse_log(
+                f"[INFO] Speech is longer than this segment -> speeding audio "
+                f"up {applied_ratio:.3f}x (pitch preserved, kept within the "
+                f"{MIN_SPEED_RATIO}x-{MAX_SPEED_RATIO}x allowed range)."
+            )
+            await time_stretch_to_duration(trimmed_path, effective_target, fitted_path, False)
             break
 
         # Over the cap: prefer shortening the SCRIPT over speeding the
@@ -2343,14 +2439,20 @@ async def prepare(session_id: str):
     generate any voice — that only happens once the person presses the
     dub button (see /dub).
     """
+    _validate_session_id(session_id)
     sess = load_session(session_id)
     if not sess or not sess.video_path or not sess.video_path.exists():
         raise HTTPException(status_code=404, detail="Unknown or expired session_id.")
 
     async def event_stream() -> AsyncGenerator[dict, None]:
         yield sse_log(f"[INFO] Session {session_id} uploaded. Analyzing...")
-        async for ev in run_prepare(sess):
-            yield ev
+        # Strict per-session isolation: serialize against any OTHER
+        # concurrent request for this exact session_id, while a different
+        # session_id's pipeline (a different user/account) runs fully
+        # concurrently, completely unaffected.
+        async with _session_lock(session_id):
+            async for ev in run_prepare(sess):
+                yield ev
 
     return EventSourceResponse(event_stream(), ping=10)
 
@@ -2379,6 +2481,7 @@ async def dub(
     (every model tried in the module's default order), so older frontends
     that don't send these fields are unaffected.
     """
+    _validate_session_id(session_id)
     if not GEMINI_API_KEYS:
         raise HTTPException(status_code=500, detail="No GEMINI_API_KEY(s) configured.")
     if not GROQ_API_KEYS:
@@ -2406,8 +2509,13 @@ async def dub(
             f"({sess.single_voice}) — voice-model priority: "
             f"{' -> '.join(sess.tts_models)}."
         )
-        async for ev in run_dub(sess):
-            yield ev
+        # Strict per-session isolation: serialize against any OTHER
+        # concurrent request for this exact session_id, while a different
+        # session_id's pipeline (a different user/account) runs fully
+        # concurrently, completely unaffected.
+        async with _session_lock(session_id):
+            async for ev in run_dub(sess):
+                yield ev
 
     return EventSourceResponse(event_stream(), ping=10)
 
@@ -2423,8 +2531,9 @@ async def download(session_id: str):
     cleanup happens on the 1-hour TTL sweep (or an explicit DELETE
     /session/{id}) so a slow/weak connection never loses the result.
     """
+    _validate_session_id(session_id)
     sess = load_session(session_id)
-    out_video = ((sess.dir if sess else WORK_DIR / session_id) / "dubbed_output.mp4")
+    out_video = ((sess.dir if sess else _safe_session_dir(session_id)) / "dubbed_output.mp4")
     if not out_video.exists():
         raise HTTPException(status_code=404, detail="Result not found or already cleaned up.")
     return FileResponse(
@@ -2436,6 +2545,7 @@ async def download(session_id: str):
 
 @app.delete("/session/{session_id}")
 async def cancel_session(session_id: str) -> JSONResponse:
+    _validate_session_id(session_id)
     _destroy_session(session_id)
     return JSONResponse({"status": "deleted", "session_id": session_id})
 
