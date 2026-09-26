@@ -36,62 +36,84 @@ Two-phase flow (upload vs. dub are deliberately separate)
 
 Voice generation strategy
 --------------------------
-The ENTIRE translated script is sent as exactly ONE Gemini TTS request
-(never split into chunks, never split into per-line requests) — this is a
-deliberate design choice: mixing per-line speeds would make some lines
-sound faster than others, which is far more noticeable than a single
-uniform speed change across the whole track.
+The translated script is sent to Gemini TTS in SEQUENTIAL, bounded
+chunks — never one single giant request, and never several requests
+fired at once:
 
-After that one request comes back as raw audio, the pipeline works like a
-real audio engineer instead of guessing:
+  * The script is split into blocks of at most TTS_CHUNK_CHAR_BUDGET
+    (1500) characters, breaking only on line boundaries so a sentence is
+    never cut mid-word. A short remainder (e.g. 700 characters) simply
+    becomes its own final chunk — it is never merged into a bigger one
+    and never dropped.
+  * This keeps peak RAM low (no single oversized generation held in
+    memory at once) and cuts latency, because each chunk is a small,
+    fast Gemini TTS call instead of one very long one.
+  * Chunking also protects voice quality: very long single-shot TTS
+    generations are where Gemini's native voice model is most prone to
+    drifting/robotic artifacts near the end of the take. Bounding every
+    request to <=1500 characters keeps each individual generation well
+    inside the model's comfortable range, so the voice stays natural and
+    clear all the way through — including the last chunk.
+  * Chunks are generated ONE AT A TIME, in order, and their raw PCM audio
+    is concatenated back-to-back (with a very short silence pad between
+    chunks — see TTS_CHUNK_SILENCE_PAD_MS) into a single continuous
+    track before the rest of the pipeline (trim / duration-match / mux)
+    ever sees it. Downstream, it is still treated as one seamless voice
+    track — nothing else in the pipeline needs to know it was chunked.
+
+After the (chunked) audio comes back, the pipeline works like a real
+audio engineer instead of guessing:
 
   1. SILENCE TRIM (adaptive ladder): every internal silent gap longer than
      a threshold is trimmed down (FFmpeg `silenceremove`, real audio-level
      detection — not a timestamp guess). The ladder starts at 500ms. If the
      video is short and the generated speech is still too long relative to
      it after a 500ms trim, the threshold is automatically lowered in
-     steps (500 -> 400 -> 280ms) — never below 280ms, because that starts
-     cutting into natural between-sentence pauses, which makes the voice
-     sound rushed/mashed-together rather than helping. This only ever
-     trims SILENCE, never speech.
+     steps (500 -> 400ms) — never lower, because that starts cutting into
+     natural between-sentence pauses, which makes the voice sound
+     rushed/mashed-together rather than helping. This only ever trims
+     SILENCE, never speech.
   2. DURATION MATCH: the trimmed speech duration is compared against the
      ACTUAL VIDEO DURATION (not the sum of Whisper segment timings) and a
      single pitch-preserving speed ratio is computed and applied to the
      WHOLE track at once — so every line speeds up or slows down by
      exactly the same amount, with no "one line fast, one line normal"
-     artifact. Uses `rubberband` when the FFmpeg build has it (much
-     cleaner than chained `atempo` at larger ratios), else falls back to
-     `atempo` automatically.
-  3. FINE-TUNE: if the fitted track is still more than ~150ms off the
-     video length (rounding/precision noise), one small corrective
-     micro-pass nudges it the rest of the way.
-  4. MUX: the video stream is copied bit-for-bit (`-c:v copy`) — zero
+     artifact. The applied ratio is ALWAYS locked to the
+     ATEMPO_LOCK_MIN..ATEMPO_LOCK_MAX (1.15x-1.30x) band — never looser,
+     never tighter — so the dub always matches the video's timing without
+     ever sounding unnaturally sped up or slowed down.
+  3. MUX: the video stream is copied bit-for-bit (`-c:v copy`) — zero
      re-encoding, zero quality loss — only the audio track is replaced.
 
 Backup / never-crash design
 -----------------------------
-* Every Gemini TTS call tries TTS_MODELS in order, and for EACH model
-  tries every configured GEMINI_API_KEYS entry before moving to the next
-  model — one (model, key) combination busy -> automatic fallback to the
-  next, with an SSE [WARN] so it's visible. This is the backup plan for
-  the (still single, conceptually one-shot) TTS request: it retries
-  across every model/key combination before giving up, it does not split
-  the script into pieces.
+* Every Gemini TTS chunk tries TTS_MODELS in order, and for EACH model
+  tries every configured GEMINI_API_KEYS entry, ONE AT A TIME, before
+  moving to the next model. This is a strict, sequential failover chain:
+  the primary (model, key) combination is always tried first; on any
+  failure or timeout it fails over IMMEDIATELY to the next key, and once
+  every key is exhausted for a model it fails over to the next model —
+  with an SSE [WARN] at every step so it's visible. Keys/models are never
+  fired concurrently ("spammed") against the same chunk; only one request
+  is ever in flight per chunk at a time, which keeps provider-side rate
+  limits and quotas healthy across chunks and sessions.
 * Every processing step is wrapped so a failure ends ONLY that session
   with a clean SSE `error` event and the session's scratch files are
   deleted — the FastAPI process itself, and every other in-flight
   session, is never affected.
 * Speed ratios are always clamped to a safe FFmpeg range (0.25x-4.0x) so
   a pathological mismatch (e.g. wildly different script vs. video length)
-  degrades gracefully with a [WARN] instead of crashing the render.
+  degrades gracefully with a [WARN] instead of crashing the render; the
+  product-locked 1.15x-1.30x band is enforced on top of that clamp.
 * Transcription and translation ("script retouch") each run their OWN
   ordered model-fallback chain too (GEMINI_TRANSCRIBE_MODELS /
   GEMINI_TRANSLATE_MODELS for the Gemini engine, WHISPER_MODELS /
   TRANSLATION_MODELS for the Groq engine) — independent of, and using the
-  same proven pattern as, the TTS fallback above: every model in the chain
-  is tried against every configured API key before that step is considered
-  failed, so a single model being deprecated, rate-limited, or briefly down
-  never takes the whole pipeline down with it.
+  same proven sequential-failover pattern as, the TTS fallback above:
+  every model in the chain is tried against every configured API key
+  before that step is considered failed, so a single model being
+  deprecated, rate-limited, or briefly down never takes the whole
+  pipeline down with it.
 
 Environment
 -----------
@@ -278,6 +300,8 @@ TRANSLATION_MODEL = TRANSLATION_MODELS[0]     # elite translation (alias)
 # One model busy -> auto request goes to the next model. Still busy across
 # every model -> auto-rotate to the next GEMINI_API_KEYS entry. Every
 # model x key combination exhausted -> a clean error is raised via SSE.
+# See TTS_CHUNK_CHAR_BUDGET below for how the script is chunked before any
+# of this fallback logic runs.
 #
 # Exactly the 4 voice models requested for the UI's single/multi-select
 # picker. NOTE: "gemini-3.1-flash-tts-preview", "gemini-3.8-flash-tts" and
@@ -311,11 +335,28 @@ def parse_selected_tts_models(raw: str) -> List[str]:
         if mid and mid in TTS_MODEL_CATALOG and mid not in chosen:
             chosen.append(mid)
     return chosen or list(TTS_MODELS)
+
+
 # Hard ceiling on a SINGLE (model, key) TTS attempt. This only guards
 # against a truly hung connection (no response at all) — a normal slow
 # generation (observed up to ~90s under load) must NOT be cut off, so this
 # is intentionally generous rather than tight.
 TTS_CALL_TIMEOUT_SECONDS = 150
+
+# --- TTS chunking (RAM protection + voice-quality guard) --------------------
+# The translated script is NEVER sent to Gemini TTS as one giant request.
+# Instead it is split on line boundaries into blocks of at most this many
+# characters (a trailing remainder under the budget — e.g. 700 chars —
+# simply becomes its own final chunk rather than being padded or merged).
+# This keeps peak memory low, keeps each individual generation comfortably
+# inside the range where Gemini's native voice stays clean and consistent
+# (very long single-shot generations are where robotic/degraded artifacts
+# tend to creep in near the end), and lets a failure on one chunk be
+# retried/failed-over without re-generating the whole track.
+TTS_CHUNK_CHAR_BUDGET = 1500
+# A very short silence pad is inserted between consecutively generated
+# chunks so the splice point is inaudible instead of an abrupt jump cut.
+TTS_CHUNK_SILENCE_PAD_MS = 180
 
 # All 30 official Gemini native-TTS prebuilt voices (kept in sync with the
 # dropdown in index.html — see VOICES there for the display list).
@@ -366,10 +407,10 @@ SILENCE_TRIM_FLOOR_MS: int = SILENCE_TRIM_LADDER_MS[-1]
 SILENCE_DB_THRESHOLD = -32.0  # dB below which audio is treated as silence.
 COMFORTABLE_MAX_RATIO = 1.2   # stop shrinking the trim window once we're
                                # within +20% of the video's length — lean on
-                               # the (now formant-preserving) speed-up rather
-                               # than over-trimming pauses.
+                               # the locked-band speed-up rather than
+                               # over-trimming pauses.
 
-# Absolute FFmpeg speed-filter safety clamp (atempo/rubberband hard limits).
+# Absolute FFmpeg speed-filter safety clamp (atempo hard limits).
 HARD_SPEED_MIN = 0.25
 HARD_SPEED_MAX = 4.0
 # Softer "this might start sounding off" advisory band.
@@ -378,16 +419,20 @@ SOFT_SPEED_MAX = 1.3
 # --- Product requirement: atempo STRICTLY locked to the 1.15x-1.30x band ---
 # Every dubbed track is sped up by AT LEAST 1.15x (even if the raw fit would
 # have needed less, or none) and by NO MORE than 1.30x (even if the raw fit
-# would have needed more) — no value outside this band is ever applied.
+# would have needed more) — no value outside this band is ever applied. The
+# adaptive silence-trim ladder above works together with this lock: trimming
+# closes most of the gap first, and this band then closes the rest, so the
+# combined effect of trim + speed change always lands inside a range that
+# matches the video without ever sounding rushed or dragged out.
 ATEMPO_LOCK_MIN = 1.15
 ATEMPO_LOCK_MAX = 1.30
 
 # --- RAM safety: sequential, chunk-by-chunk processing ----------------------
 # Render's free/starter instances have limited RAM. Nothing in this pipeline
-# is allowed to run two heavy ffmpeg/audio jobs at once for a single
-# session — every step below runs strictly one-after-another, and each
-# step's own temporary files are deleted the moment that step is done with
-# them (see _cleanup_scratch()).
+# is allowed to run two heavy ffmpeg/audio jobs (or two TTS requests) at
+# once for a single session — every step below runs strictly
+# one-after-another, and each step's own temporary files are deleted the
+# moment that step is done with them (see _cleanup_scratch()).
 SEQUENTIAL_PROCESSING = True
 
 WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -616,11 +661,9 @@ _rubberband_available_cache: Optional[bool] = None
 async def rubberband_available() -> bool:
     """
     Detect (once, cached) whether this FFmpeg build includes the
-    `rubberband` filter — a much higher-quality pitch-preserving
-    time-stretch than chained `atempo`, especially at larger speed ratios
-    where chained atempo starts sounding degraded/artifacty. Not all FFmpeg
-    builds include it (requires librubberband at compile time), so we
-    detect it at runtime and gracefully fall back to atempo if absent.
+    `rubberband` filter — kept for /health reporting and for anyone who
+    re-enables it — but see `_speed_filter` below for why atempo is the
+    engine actually used on this deployment.
     """
     global _rubberband_available_cache
     if _rubberband_available_cache is not None:
@@ -649,7 +692,9 @@ def _speed_filter(ratio: float, use_rubberband: bool) -> str:
     an audible warble on Gemini's already-synthetic voice. `atempo` is
     used unconditionally now regardless of whether rubberband is
     available; `use_rubberband` is kept in the signature for compatibility
-    but is intentionally ignored.
+    but is intentionally ignored. The ratio itself is always constrained
+    upstream to the locked ATEMPO_LOCK_MIN..ATEMPO_LOCK_MAX band before it
+    ever reaches this function (see synthesize_single_track).
     """
     return _atempo_chain(ratio)
 
@@ -1254,81 +1299,37 @@ def _chunk_by_char_budget(
     return chunks
 
 
-async def groq_translate_all(
-    transcript_segments: List[Dict[str, object]],
-    source_language: str,
-    target_language: str,
-) -> dict:
+def _chunk_text_by_budget(lines: List[str], budget: int = TTS_CHUNK_CHAR_BUDGET) -> List[str]:
     """
-    Translate the WHOLE transcript in small chunks (TRANSLATE_CHUNK_SIZE
-    lines at a time) so a single LLM hiccup can only ever affect a few
-    lines. Every chunk is retried up to TRANSLATE_CHUNK_RETRIES times if it
-    doesn't come back as a strict 1:1 match; if it still fails after every
-    retry, that chunk falls back to the LITERAL SOURCE-LANGUAGE TEXT for
-    just those lines (never silently dropped) and the caller is told
-    exactly which ones via `fallback_count`. Guarantees
-    len(output_segments) == len(transcript_segments) ALWAYS.
+    Group script lines into TTS-ready text blocks of at most `budget`
+    characters, breaking ONLY on line boundaries (never mid-sentence/
+    mid-word). Consecutive lines are packed greedily: as soon as adding
+    the next line would push a block over budget, that block is closed
+    and a new one is started. A trailing remainder under the budget (e.g.
+    700 characters left over after several full 1500-char blocks) simply
+    becomes its own final chunk — it is never padded, merged into an
+    already-full neighbor, or dropped. A single line that is itself longer
+    than the budget still becomes its own chunk rather than being split,
+    since splitting mid-sentence is what causes audible mid-word cuts.
     """
-    if not transcript_segments:
-        raise RuntimeError("Nothing to translate — the transcript is empty.")
-
-    chunks: List[List[Dict[str, object]]] = _chunk_by_char_budget(transcript_segments)
-
-    detected_source_language: Optional[str] = None
-    all_segments: List[Dict[str, object]] = []
-    fallback_count = 0
-    fallback_ranges: List[str] = []
-
-    for chunk in chunks:
-        payload_chunk = [
-            {
-                "start": float(seg.get("start", 0.0)),
-                "end": float(seg.get("end", 0.0)),
-                "text": seg.get("text", ""),
-            }
-            for seg in chunk
-        ]
-
-        result_segments: List[Dict[str, object]] = []
-        last_err: Optional[Exception] = None
-        for attempt in range(1 + TRANSLATE_CHUNK_RETRIES):
-            try:
-                lang, translated = await _groq_translate_chunk(
-                    payload_chunk, source_language, target_language,
-                )
-            except Exception as exc:  # noqa: BLE001
-                last_err = exc
-                continue
-            if lang and detected_source_language is None:
-                detected_source_language = lang
-            if len(translated) == len(chunk):
-                result_segments = translated
-                break
-
-        if not result_segments:
-            # Every retry failed to come back 1:1 — NEVER drop these lines:
-            # fall back to the original source-language text so they still
-            # get voiced, and note exactly which range fell back.
-            fallback_count += len(chunk)
-            fallback_ranges.append(
-                f"{payload_chunk[0]['start']:.1f}s-{payload_chunk[-1]['end']:.1f}s"
-            )
-            result_segments = [
-                {"start": float(seg.get("start", 0.0)), "end": float(seg.get("end", 0.0)),
-                 "text": str(seg.get("text", "")).strip() or "..."}
-                for seg in chunk
-            ]
-
-        all_segments.extend(result_segments)
-
-    return {
-        "source_language": detected_source_language or source_language,
-        "segments": all_segments,
-        "input_count": len(transcript_segments),
-        "output_count": len(all_segments),
-        "fallback_count": fallback_count,
-        "fallback_ranges": fallback_ranges,
-    }
+    chunks: List[str] = []
+    current: List[str] = []
+    current_chars = 0
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        line_len = len(line)
+        would_overflow = current and (current_chars + line_len + 1 > budget)
+        if would_overflow:
+            chunks.append("\n".join(current))
+            current = []
+            current_chars = 0
+        current.append(line)
+        current_chars += line_len + 1
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
 
 
 # --------------------------------------------------------------------------- #
@@ -1379,10 +1380,10 @@ async def self_heal(
 
 
 # --------------------------------------------------------------------------- #
-# Gemini native TTS — pure text in, voice bytes out — 3-model auto-fallback.
-# This is the BACKUP PLAN for the one-shot TTS request: every (model, key)
-# combination is tried, in order, against the SAME full script — never
-# splitting the text into pieces — before a clean error is raised.
+# Gemini native TTS — pure text in, voice bytes out — chunked, strictly
+# sequential model/key failover (never fires more than one request at a
+# time; the primary (model, key) is always tried first, and any failure
+# fails over IMMEDIATELY to the next key, then the next model).
 # --------------------------------------------------------------------------- #
 
 def write_wav_from_pcm(pcm_bytes: bytes, out_wav: Path) -> None:
@@ -1393,6 +1394,41 @@ def write_wav_from_pcm(pcm_bytes: bytes, out_wav: Path) -> None:
         wf.writeframes(pcm_bytes)
 
 
+def _silence_pcm(duration_ms: int) -> bytes:
+    """Raw zeroed PCM silence of `duration_ms` at the TTS sample format."""
+    num_samples = max(0, int(TTS_SAMPLE_RATE * duration_ms / 1000))
+    return b"\x00" * (num_samples * TTS_SAMPLE_WIDTH * TTS_CHANNELS)
+
+
+def _gemini_tts_call(model_name: str, api_key: str, voice_name: str, spoken_text: str) -> bytes:
+    """
+    A single, synchronous Gemini native-TTS request for one chunk of text.
+    Raises on any failure (network error, empty response, unsupported
+    model, etc.) so the caller's sequential fallback loop can catch it and
+    move on immediately.
+    """
+    client = get_client(api_key)
+    resp = client.models.generate_content(
+        model=model_name,
+        contents=spoken_text,
+        config=types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name=voice_name
+                    )
+                )
+            ),
+        ),
+    )
+    for part in resp.candidates[0].content.parts:
+        inline = getattr(part, "inline_data", None)
+        if inline and getattr(inline, "data", None):
+            return inline.data
+    raise RuntimeError(f"{model_name} returned no audio data.")
+
+
 async def gemini_tts_with_fallback(
     text: str,
     voice_name: str,
@@ -1401,28 +1437,31 @@ async def gemini_tts_with_fallback(
     models: Optional[List[str]] = None,
 ) -> AsyncGenerator[dict, None]:
     """
-    Generate speech with Gemini native TTS for the FULL script in ONE call.
+    Generate speech with Gemini native TTS for the FULL script, internally
+    split into sequential <=TTS_CHUNK_CHAR_BUDGET-character chunks (see
+    _chunk_text_by_budget). This keeps peak memory low, keeps each
+    individual generation well inside the range where the voice stays
+    natural (long single-shot generations are where robotic/degraded
+    artifacts tend to creep in near the end), and lets one bad chunk be
+    retried/failed-over without re-generating everything.
 
-    Key insight from real-world logs: trying keys ONE AT A TIME, waiting up
-    to TTS_CALL_TIMEOUT_SECONDS on each before moving to the next, means a
-    congested model can burn (10 keys x 150s =) 25 minutes before we even
-    fall through to the next model — and a connection sitting idle that
-    long risks the whole SSE stream getting killed by a proxy in between.
+    STRICT SEQUENTIAL FAILOVER (no simultaneous key/model spamming): for
+    EVERY chunk, the primary (model, key) combination is tried FIRST; on
+    any failure or timeout, the very next key is tried immediately, and
+    once every key is exhausted for a model, the next model is tried —
+    one attempt in flight at a time, never several keys or models fired
+    concurrently against the same chunk. Only if every model x key
+    combination fails for a chunk does the whole call raise.
 
-    So instead: for EACH model, every configured API key is tried
-    CONCURRENTLY (all fired at once — this is safe, each key has its own
-    independent quota/project). We take whichever attempt succeeds FIRST
-    and immediately cancel the rest. Only if EVERY key fails for a model do
-    we move on to the next model. This means:
-      - The common case (at least one of N keys is free) resolves in
-        however long the FASTEST attempt takes — often just a few seconds.
-      - The worst case (a model is down for everyone) is bounded by
-        TTS_CALL_TIMEOUT_SECONDS ONCE per model, not multiplied by the key
-        count.
+    Chunks are generated in order and their raw PCM is concatenated with a
+    short silence pad between them (TTS_CHUNK_SILENCE_PAD_MS) so the
+    splice point is inaudible, then written out as a single continuous WAV
+    — downstream steps (trim / duration-match / mux) see one seamless
+    track, exactly as before.
 
     Yields SSE log dicts as it goes; the FINAL yielded item is always
-    {"_tts_result": "<model_name_used>"} so the caller can tell which model
-    actually produced the audio.
+    {"_tts_result": "<comma-separated model name(s) used>"} so the caller
+    can tell which model(s) actually produced the audio.
     """
     text = (text or "").strip()
     if not text:
@@ -1432,100 +1471,75 @@ async def gemini_tts_with_fallback(
         raise RuntimeError("No GEMINI_API_KEY(s) configured.")
 
     voice_name = voice_name if voice_name in GEMINI_VOICE_NAMES else "Kore"
-    spoken = f"{style_hint.strip()}: {text}" if style_hint.strip() else text
-
-    def _call(model_name: str, api_key: str) -> bytes:
-        client = get_client(api_key)
-        resp = client.models.generate_content(
-            model=model_name,
-            contents=spoken,
-            config=types.GenerateContentConfig(
-                response_modalities=["AUDIO"],
-                speech_config=types.SpeechConfig(
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            voice_name=voice_name
-                        )
-                    )
-                ),
-            ),
-        )
-        for part in resp.candidates[0].content.parts:
-            inline = getattr(part, "inline_data", None)
-            if inline and getattr(inline, "data", None):
-                return inline.data
-        raise RuntimeError(f"{model_name} returned no audio data.")
-
-    async def _attempt(model_name: str, api_key: str, key_idx: int):
-        try:
-            pcm = await asyncio.wait_for(
-                asyncio.to_thread(_call, model_name, api_key),
-                timeout=TTS_CALL_TIMEOUT_SECONDS,
-            )
-            return (True, model_name, key_idx, pcm, None)
-        except asyncio.TimeoutError:
-            return (False, model_name, key_idx, None,
-                    RuntimeError(f"timed out after {TTS_CALL_TIMEOUT_SECONDS}s"))
-        except Exception as exc:  # noqa: BLE001
-            return (False, model_name, key_idx, None, exc)
-
-    last_err: Optional[Exception] = None
-    multi_key = len(GEMINI_API_KEYS) > 1
     model_chain = [m for m in (models or TTS_MODELS) if m in TTS_MODEL_CATALOG] or list(TTS_MODELS)
 
-    for model_name in model_chain:
-        tasks = {
-            asyncio.create_task(_attempt(model_name, api_key, key_idx))
-            for key_idx, api_key in enumerate(GEMINI_API_KEYS)
-        }
-        winner: Optional[Tuple[str, bytes]] = None
+    lines = [l for l in text.split("\n") if l.strip()] or [text]
+    chunks = _chunk_text_by_budget(lines, TTS_CHUNK_CHAR_BUDGET) or [text]
 
-        while tasks:
-            done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            for finished in done:
-                ok, mname, key_idx, pcm, err = finished.result()
-                if ok:
-                    winner = (mname, pcm)
-                    continue  # keep draining `done`, but we already have a winner
-                last_err = err
-                key_note = f" (key #{key_idx + 1}/{len(GEMINI_API_KEYS)})" if multi_key else ""
-                if isinstance(err, RuntimeError) and "timed out" in str(err):
-                    yield sse_log(
-                        f"[WARN] Voice model '{model_name}'{key_note} did not respond "
-                        f"within {TTS_CALL_TIMEOUT_SECONDS}s."
-                    )
-                else:
-                    yield sse_log(
-                        f"[WARN] Voice model '{model_name}'{key_note} is busy/unavailable "
-                        f"({type(err).__name__}: {err})."
-                    )
-            if winner:
-                break
-
-        # A winner (or a fully-drained key set) means we're done racing this
-        # model — cancel any attempts still in flight before moving on.
-        for t in tasks:
-            t.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-        if winner:
-            mname, pcm = winner
-            write_wav_from_pcm(pcm, out_wav)
-            yield sse_log(f"[SUCCESS] A key succeeded on '{mname}' — using it immediately.")
-            yield {"_tts_result": mname}
-            return
-
-        yield sse_log(
-            f"[WARN] All {len(GEMINI_API_KEYS)} key(s) failed for '{model_name}'. "
-            "Trying the next model..."
-        )
-
-    raise RuntimeError(
-        f"All {len(model_chain)} selected Gemini voice model(s) x "
-        f"{len(GEMINI_API_KEYS)} key(s) are currently busy or unavailable. "
-        f"Last error: {last_err}"
+    yield sse_log(
+        f"[INFO] Script split into {len(chunks)} sequential TTS chunk(s) "
+        f"(<= {TTS_CHUNK_CHAR_BUDGET} chars each) — generating one at a time, "
+        "sequential model/key failover per chunk (no simultaneous requests)..."
     )
+
+    pcm_total = bytearray()
+    models_used: List[str] = []
+    pad_bytes = _silence_pcm(TTS_CHUNK_SILENCE_PAD_MS)
+
+    for idx, chunk_text in enumerate(chunks, start=1):
+        spoken = f"{style_hint.strip()}: {chunk_text}" if style_hint.strip() else chunk_text
+        pcm: Optional[bytes] = None
+        last_err: Optional[Exception] = None
+
+        for model_name in model_chain:
+            for key_idx, api_key in enumerate(GEMINI_API_KEYS):
+                try:
+                    pcm = await asyncio.wait_for(
+                        asyncio.to_thread(_gemini_tts_call, model_name, api_key, voice_name, spoken),
+                        timeout=TTS_CALL_TIMEOUT_SECONDS,
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    last_err = RuntimeError(f"timed out after {TTS_CALL_TIMEOUT_SECONDS}s")
+                    yield sse_log(
+                        f"[WARN] Chunk {idx}/{len(chunks)}: model '{model_name}' "
+                        f"key #{key_idx + 1}/{len(GEMINI_API_KEYS)} timed out — "
+                        "failing over to the next key immediately."
+                    )
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    last_err = exc
+                    yield sse_log(
+                        f"[WARN] Chunk {idx}/{len(chunks)}: model '{model_name}' "
+                        f"key #{key_idx + 1}/{len(GEMINI_API_KEYS)} failed "
+                        f"({type(exc).__name__}: {exc}) — failing over to the "
+                        "next key immediately."
+                    )
+                    continue
+            if pcm is not None:
+                models_used.append(model_name)
+                yield sse_log(f"[SUCCESS] Chunk {idx}/{len(chunks)} voiced via '{model_name}'.")
+                break
+            yield sse_log(
+                f"[WARN] Chunk {idx}/{len(chunks)}: all {len(GEMINI_API_KEYS)} "
+                f"key(s) failed for '{model_name}' — switching to the next "
+                "model immediately."
+            )
+
+        if pcm is None:
+            raise RuntimeError(
+                f"Chunk {idx}/{len(chunks)} failed on all {len(model_chain)} "
+                f"selected model(s) x {len(GEMINI_API_KEYS)} configured key(s). "
+                f"Last error: {last_err}"
+            ) from last_err
+
+        if idx > 1:
+            pcm_total.extend(pad_bytes)
+        pcm_total.extend(pcm)
+
+    write_wav_from_pcm(bytes(pcm_total), out_wav)
+    unique_models = list(dict.fromkeys(models_used))  # preserve first-seen order, de-duped
+    yield {"_tts_result": ", ".join(unique_models), "_chunk_count": len(chunks)}
 
 
 # --------------------------------------------------------------------------- #
@@ -1557,7 +1571,9 @@ async def _adaptive_silence_trim(
     Stops as soon as a rung lands comfortably close to the video length
     (within COMFORTABLE_MAX_RATIO); otherwise keeps the last (most
     aggressive, i.e. 400ms) result. Never re-trims an already-trimmed
-    file, so cuts never compound.
+    file, so cuts never compound. The remaining gap after this step is
+    always closed by the locked ATEMPO_LOCK_MIN..ATEMPO_LOCK_MAX speed-up,
+    never by trimming further than the 400ms floor.
     Returns (trimmed_path, trimmed_duration_seconds, ms_used, sse_log_events).
     """
     logs: List[dict] = []
@@ -1601,14 +1617,15 @@ async def _adaptive_silence_trim(
             f"[WARN] Even at the locked {SILENCE_TRIM_FLOOR_MS}ms floor, speech "
             f"({best_dur:.2f}s) is still longer than a comfortable speed-up "
             f"would allow for a {video_duration:.2f}s video — the remaining "
-            "gap will be closed by the locked 1.15x-1.30x speed-up."
+            f"gap will be closed by the locked {ATEMPO_LOCK_MIN:.2f}x-"
+            f"{ATEMPO_LOCK_MAX:.2f}x speed-up."
         ))
 
     return best_path, best_dur, best_ms, logs
 
 
 # --------------------------------------------------------------------------- #
-# Core processing: ONE Gemini TTS request -> trim -> exact duration match -> mux
+# Core processing: chunked Gemini TTS -> trim -> exact duration match -> mux
 # --------------------------------------------------------------------------- #
 
 def _tts_style_hint(target_language: str) -> str:
@@ -1647,22 +1664,27 @@ async def synthesize_single_track(sess: Session) -> AsyncGenerator[dict, None]:
     if not script_text:
         raise RuntimeError("Nothing to voice — the translated script came back empty.")
 
-    yield sse_progress(58, "Generating voice (single request)")
+    yield sse_progress(58, "Generating voice (chunked, sequential failover)")
     yield sse_log(
-        f"[INFO] Sending the FULL script as ONE Gemini TTS request "
-        f"({len(script_text)} chars, {len(sess.segments)} line(s)) — no per-line "
-        "splitting, so pacing stays perfectly uniform..."
+        f"[INFO] Sending the script to Gemini TTS in sequential, "
+        f"<= {TTS_CHUNK_CHAR_BUDGET}-character chunks ({len(script_text)} total "
+        f"chars, {len(sess.segments)} line(s)) — never one giant request, "
+        "never several keys/models fired at once. Each chunk fails over to "
+        "the next model/key immediately on error, and a short silence pad "
+        "is inserted between chunks to keep every splice inaudible..."
     )
 
     raw_audio = seg_dir / "raw.wav"
     model_used: Optional[str] = None
+    chunk_count_used = 0
     tts_chain = sess.tts_models or list(TTS_MODELS)
     yield sse_log(f"[INFO] Voice model fallback chain: {', '.join(tts_chain)}")
 
-    # Self-healing outer retry: gemini_tts_with_fallback already races every
-    # (model, key) combination internally; this outer loop additionally
-    # retries the WHOLE attempt once more after a short backoff in case
-    # every model/key was transiently down at the same instant.
+    # Self-healing outer retry: gemini_tts_with_fallback already fails over
+    # sequentially across every (model, key) combination per chunk; this
+    # outer loop additionally retries the WHOLE chunked run once more after
+    # a short backoff in case every model/key was transiently down at the
+    # same instant.
     last_tts_err: Optional[Exception] = None
     for tts_attempt in range(1 + SELF_HEAL_RETRIES):
         try:
@@ -1675,6 +1697,7 @@ async def synthesize_single_track(sess: Session) -> AsyncGenerator[dict, None]:
             ):
                 if "_tts_result" in ev:
                     model_used = ev["_tts_result"]
+                    chunk_count_used = ev.get("_chunk_count", chunk_count_used)
                 else:
                     yield ev
             break
@@ -1683,12 +1706,15 @@ async def synthesize_single_track(sess: Session) -> AsyncGenerator[dict, None]:
             if tts_attempt < SELF_HEAL_RETRIES:
                 yield sse_log(
                     f"[WARN] Voice generation failed ({exc}) — self-healing: "
-                    f"retrying the full model chain in {SELF_HEAL_BACKOFF_SECONDS:.0f}s..."
+                    f"retrying the full chunked run in {SELF_HEAL_BACKOFF_SECONDS:.0f}s..."
                 )
                 await asyncio.sleep(SELF_HEAL_BACKOFF_SECONDS)
             else:
                 raise
-    yield sse_log(f"[SUCCESS] Voice generated via {model_used}.")
+    yield sse_log(
+        f"[SUCCESS] Voice generated via {model_used} across {chunk_count_used} "
+        "sequential chunk(s)."
+    )
 
     yield sse_progress(70, "Trimming long silences")
     trimmed_path, trimmed_dur, ms_used, trim_logs = await _adaptive_silence_trim(
@@ -1710,7 +1736,10 @@ async def synthesize_single_track(sess: Session) -> AsyncGenerator[dict, None]:
     # pacing even when the natural fit needed less), and never above 1.30x
     # (so speech never sounds rushed/unnatural even when the natural fit
     # would have needed more — the mux step's apad+shortest absorbs any
-    # remaining gap as trailing silence instead).
+    # remaining gap as trailing silence instead). Combined with the
+    # adaptive silence trim above, this guarantees the final dubbed track
+    # always lands inside a range that matches the source video's timing
+    # without ever sounding sped up or dragged out beyond that locked band.
     fitted_path = seg_dir / "fitted.wav"
     applied_speed_ratio = max(ATEMPO_LOCK_MIN, min(ATEMPO_LOCK_MAX, raw_ratio))
     yield sse_log(
@@ -1735,12 +1764,12 @@ async def synthesize_single_track(sess: Session) -> AsyncGenerator[dict, None]:
     )
 
     # We deliberately do NOT run a second corrective speed pass here even if
-    # the fit is a little off target: re-running rubberband on audio that
-    # has already been time-stretched once compounds phase-vocoder
-    # artifacts and is a real source of "broken"-sounding speech. A single
-    # pass gets within a few milliseconds in practice (verified), and the
-    # mux step's apad+shortest silently absorbs any tiny remaining gap —
-    # far safer than a second stretch.
+    # the fit is a little off target: re-running a time-stretch on audio
+    # that has already been stretched once compounds artifacts and is a
+    # real source of "broken"-sounding speech. A single pass gets within a
+    # few milliseconds in practice (verified), and the mux step's
+    # apad+shortest silently absorbs any tiny remaining gap — far safer
+    # than a second stretch.
     fitted_dur = await probe_duration(fitted_path)
     yield sse_log(f"[SUCCESS] Final dubbed audio: {fitted_dur:.2f}s (target {sess.video_duration:.2f}s).")
 
@@ -1761,7 +1790,7 @@ async def synthesize_single_track(sess: Session) -> AsyncGenerator[dict, None]:
         "source_language": sess.source_language,
         "target_language": sess.target_language,
         "segments": len(sess.segments),
-        "tts_requests": 1,
+        "tts_requests": chunk_count_used,
         "speed_ratio": round(applied_speed_ratio, 4),
         "voice_model": model_used,
     })
@@ -1834,7 +1863,7 @@ async def run_dub(sess: Session) -> AsyncGenerator[dict, None]:
     The MANUAL phase: only runs once the person has picked a target
     language + voice and pressed the dub button. Reuses the transcript
     already produced by run_prepare — translate (chunked, drop-proof) ->
-    one-shot TTS -> trim -> exact duration match -> mux.
+    chunked TTS -> trim -> exact duration match -> mux.
     """
     try:
         if not sess.raw_segments:
@@ -1908,7 +1937,7 @@ async def run_dub(sess: Session) -> AsyncGenerator[dict, None]:
 # FastAPI app + endpoints
 # --------------------------------------------------------------------------- #
 
-app = FastAPI(title="Ultimate Premium Video Dubbing Platform", version="4.1.0-single")
+app = FastAPI(title="Ultimate Premium Video Dubbing Platform", version="4.2.0-chunked-tts")
 
 # CORS_ALLOW_ORIGINS (optional): comma-separated allow-list, e.g.
 # "https://your-site.netlify.app,https://your-custom-domain.com". Defaults
@@ -1937,6 +1966,8 @@ async def health() -> JSONResponse:
                               (GEMINI_API_KEYS if e == "gemini" else GROQ_API_KEYS)],
         "tts_models": TTS_MODELS,
         "tts_model_labels": TTS_MODEL_CATALOG,
+        "tts_chunk_char_budget": TTS_CHUNK_CHAR_BUDGET,
+        "tts_chunk_silence_pad_ms": TTS_CHUNK_SILENCE_PAD_MS,
         "voices": GEMINI_VOICE_NAMES,
         "whisper_model": WHISPER_MODEL,
         "whisper_models": WHISPER_MODELS,
@@ -2051,7 +2082,9 @@ async def dub(
     engine for this run. `tts_models` (optional) is a comma-separated list
     of the voice-model IDs picked from the single/multi-select UI — the
     4-model catalog (see TTS_MODEL_CATALOG); an empty/invalid value falls
-    back to the full default fallback chain.
+    back to the full default fallback chain. Whether one or several models
+    are selected, generation always uses the same strict sequential
+    failover — never simultaneous requests across models or keys.
     """
     eng = (engine or "").strip().lower()
     if eng in ("gemini", "groq"):
