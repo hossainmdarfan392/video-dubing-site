@@ -60,12 +60,19 @@ audio engineer instead of guessing:
      ACTUAL target duration for that piece (the real video, or that
      chunk's own time-span within it — not the sum of Whisper segment
      timings) and a single pitch-preserving `atempo` speed-up is applied
-     to the WHOLE piece at once if (and only if) it's too long. Speech is
-     NEVER slowed below its natural 1.0x pace — a slowed-down voice sounds
-     worse than a little trailing silence, which the final mux step pads
-     in automatically. `atempo` (FFmpeg native) is used deliberately over
-     `rubberband`: real listening tests on this deployment found atempo
-     noticeably cleaner on speech.
+     if (and only if) it's too long — capped HARD at MAX_SPEED_RATIO
+     (1.20x). Speech is NEVER slowed below its natural 1.0x pace, and
+     never sped up past 1.20x either — both sound unnatural. If 1.20x
+     alone wouldn't be enough, the SCRIPT is shortened instead (a rough
+     pre-TTS estimate flags this proactively, and the actual measured
+     result triggers one more shortened regeneration if still needed —
+     see _produce_one_chunk_audio and MAX_SHORTEN_ATTEMPTS). In the rare
+     case even that isn't enough, speed still never exceeds 1.20x — any
+     tiny remainder is covered by extending the video's ending afterward
+     (see "Speed ceiling" below), never by cutting off speech. `atempo`
+     (FFmpeg native) is used deliberately over `rubberband`: real
+     listening tests on this deployment found atempo noticeably cleaner
+     on speech.
   3. MUX: the video stream is copied bit-for-bit (`-c:v copy`) — zero
      re-encoding, zero quality loss — only the audio track is replaced.
      (The one exception is the optional ending-CTA feature, which has to
@@ -73,11 +80,11 @@ audio engineer instead of guessing:
 
 TTS chunking (long/text-heavy videos)
 ----------------------------------------
-If a script exceeds TTS_SINGLE_REQUEST_MAX_SECONDS of video OR
-TTS_CHUNK_MAX_CHARS characters, it's split at natural sentence boundaries
-into pieces of up to TTS_CHUNK_MAX_CHARS each (_split_into_tts_chunks).
-Every piece still goes through the *exact same* one-request pipeline
-above — nothing about it changes — just run once per piece. Pieces are
+If a script exceeds TTS_CHUNK_MAX_CHARS characters (NOT video duration —
+see _split_into_tts_chunks for why), it's split at natural sentence
+boundaries into pieces of up to TTS_CHUNK_MAX_CHARS each. Every piece
+still goes through the *exact same* one-request pipeline above — nothing
+about it changes — just run once per piece. Pieces are
 generated CONCURRENTLY, not sequentially, and each piece gets its OWN
 slice of the configured Gemini keys (_partition_keys_for_chunks) so
 simultaneous pieces never fight over the same key's per-minute quota. As
@@ -85,6 +92,19 @@ each piece finishes, its own SSE log/progress events stream through live
 (prefixed "[Part N/M]"), and once every piece is back they're joined into
 one continuous track (FFmpeg concat demuxer, lossless) before the final
 duration-vs-video sanity check and mux.
+
+Speed ceiling & script-shortening
+-------------------------------------
+Speed is capped at MAX_SPEED_RATIO (1.20x) — never exceeded. If a chunk's
+speech looks (or measures) too long for its slot even after silence-trim,
+the SCRIPT is shortened via Groq rather than pushing the voice faster:
+once proactively (character-count estimate, before the first TTS call)
+and once more reactively (measured result, with a regenerated TTS call)
+if still needed — MAX_SHORTEN_ATTEMPTS bounds this to at most 2 tries, no
+unbounded loop. If a chunk is still over the cap after that (rare), speed
+is held at exactly 1.20x and the small remainder is covered by extending
+that chunk's video span afterward — see the overflow safety-net in
+synthesize_single_track — never by cutting off speech.
 
 Optional ending CTA
 -----------------------
@@ -96,13 +116,22 @@ one path that can't use `-c:v copy` (a video filter forces a re-encode,
 done at crf 18 / visually lossless) — scoped only to this optional,
 off-by-default feature; every other video is untouched as always.
 
-Simple, everyday wording
-----------------------------
-The translation prompt explicitly asks for plain, spoken, everyday
-vocabulary rather than formal/literary phrasing — with extra Bangladeshi-
-Bengali-specific guidance (natural Dhaka-standard, avoid heavy তৎসম words,
-casual short-video-style hooks) when the target language is Bengali. This
-only changes word choice, never the underlying content or structure.
+Simple, everyday wording + Bengali polish pass
+----------------------------------------------------
+The translation prompt itself asks for plain, spoken, everyday vocabulary
+rather than formal/literary phrasing for every target language. When the
+target is Bengali specifically, there's a SECOND dedicated pass after
+translation (groq_polish_all) that reviews the translated script
+alongside the original source text and rewrites lines that sound stiff,
+unnatural, or mistranslated — natural Bangladeshi (Dhaka-standard)
+phrasing, common English loanwords for globally-recognized terms
+Bangladeshi audiences already use directly ("সিরিয়াল কিলার" rather than a
+stiff literal "ধারাবাহিক হত্যাকারী"), and a gender/pronoun cross-check
+against the original (source languages like Mandarin, where 他/她 sound
+identical, can otherwise get this wrong). Uses the same chunked,
+retry-then-fallback-to-pre-polish guarantee as translation — never drops
+or corrupts a line, only changes wording. No-op for any other target
+language.
 
 Backup / never-crash design
 -----------------------------
@@ -273,11 +302,11 @@ COMFORTABLE_MAX_RATIO = 1.2   # stop shrinking the trim window once we're
                                # the (now formant-preserving) speed-up rather
                                # than over-trimming pauses.
 
-# Absolute FFmpeg speed-filter safety clamp (atempo/rubberband hard limits).
+# Absolute FFmpeg speed-filter safety clamp (atempo hard limits — a
+# low-level safety net for the filter itself, distinct from the
+# pipeline-level MAX_SPEED_RATIO business rule enforced below).
 HARD_SPEED_MIN = 0.25
 HARD_SPEED_MAX = 4.0
-# Softer "this might start sounding off" advisory band.
-SOFT_SPEED_MAX = 1.3
 
 # --- TTS chunking for long videos ----------------------------------------- #
 # Real-world evidence (a 289 MB / ~5 min video, 6,385 translated
@@ -285,26 +314,47 @@ SOFT_SPEED_MAX = 1.3
 # key is limited to ~10,000 input tokens PER MINUTE on the flash-tts
 # models, and non-Latin scripts like Bengali can tokenize far less
 # efficiently than English, so a single big request can blow the quota
-# outright and either 429 or (worse) hang until our own timeout. Google's
-# own docs separately warn that TTS quality/consistency can drift on
-# outputs longer than "a few minutes" regardless of quota. So: a short/
-# light video is still always ONE request (unchanged). A longer or
-# text-heavy video is automatically split into several requests — each one
-# still a single stand-alone TTS call that goes through the EXACT SAME
-# pipeline (one-shot TTS -> adaptive silence-trim -> never-below-1.0x speed
-# match) as the short-video case, just run once per chunk instead of once
-# for the whole video. Chunks are then generated CONCURRENTLY, each pinned
-# to its OWN slice of the available API keys (see _partition_keys_for_chunks)
-# so simultaneous chunks never fight each other for the same key's
-# per-minute quota, before being joined back into one continuous track.
-TTS_SINGLE_REQUEST_MAX_SECONDS = 240   # <=4 min of video -> eligible for 1 request
-TTS_CHUNK_TARGET_SECONDS = 300         # generous secondary safety cap (rarely the
-                                         # binding constraint — chars usually hit first)
-TTS_CHUNK_MAX_CHARS = 2000             # PRIMARY split trigger — a conservative,
-                                         # evidence-based size that comfortably fits
-                                         # under the tightest observed per-key,
-                                         # per-minute token quota even for
-                                         # token-hungry scripts (Bengali, etc.)
+# outright and either 429 or (worse) hang until our own timeout.
+#
+# Split decision is PURELY by character count — NOT video duration. A
+# long video with sparse dialogue may need only one request; a short,
+# dense one might still need several. Character count of the text
+# actually being sent is what drives the per-key token quota, so it's
+# what decides the split (see _split_into_tts_chunks).
+#
+# Every chunk still goes through the EXACT SAME pipeline (one-shot TTS ->
+# adaptive silence-trim -> speed match, capped at MAX_SPEED_RATIO) as a
+# single-request video — just run once per chunk. Chunks are generated
+# CONCURRENTLY, each pinned to its OWN slice of the available API keys
+# (see _partition_keys_for_chunks) so simultaneous chunks never fight each
+# other for the same key's per-minute quota, before being joined back into
+# one continuous track.
+TTS_CHUNK_MAX_CHARS = 2000             # PRIMARY (and only) split trigger — a
+                                         # conservative, evidence-based size that
+                                         # comfortably fits under the tightest
+                                         # observed per-key, per-minute token
+                                         # quota even for token-hungry scripts
+                                         # (Bengali, etc.)
+
+# --- Speed ceiling + script-shortening (never sound sped-up) -------------- #
+# Speeding audio up too far starts sounding audibly unnatural. Rather than
+# ever exceeding a modest ceiling, the SCRIPT is shortened instead: a
+# rough pre-TTS character-count estimate flags a chunk likely to run long
+# BEFORE spending a request on it (proactive), and the ACTUAL measured
+# result after TTS triggers one more shortening + regeneration pass if
+# it's still over (reactive) — see _produce_one_chunk_audio.
+MAX_SPEED_RATIO = 1.20                 # hard target ceiling; the pipeline
+                                         # actively shortens the script rather
+                                         # than exceeding this
+MAX_SHORTEN_ATTEMPTS = 2               # 1 proactive + 1 reactive — bounded,
+                                         # never an unbounded retry loop
+CHARS_PER_SECOND_ESTIMATE = 13.0       # rough, language-agnostic speaking-rate
+                                         # estimate, used only to flag a chunk
+                                         # PROACTIVELY, before the first real
+                                         # TTS call — the authoritative check is
+                                         # always the actual generated audio's
+                                         # measured duration afterward
+
 
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -790,75 +840,22 @@ async def groq_transcribe(audio_path: Path) -> dict:
     return {"language": language, "segments": segments}
 
 
-async def _groq_translate_chunk(
-    chunk_segments: List[Dict[str, object]],
-    source_language: str,
-    target_language: str,
+async def _groq_json_segments_call(
+    system_prompt: str,
+    user_payload_obj: dict,
+    expected_count: int,
 ) -> Tuple[Optional[str], List[Dict[str, object]]]:
     """
-    Translate ONE small chunk (<= TRANSLATE_CHUNK_SIZE lines) and return
-    (detected_source_language_or_None, translated_segments). Returns an
-    EMPTY list (never raises) if this chunk's output doesn't come back as a
-    strict 1:1 match after internal parsing — the caller (groq_translate_all)
-    is responsible for retrying / falling back so no line is ever silently
-    lost.
+    Shared low-level helper used by translate/polish/shorten alike: call
+    Groq chat completions with a system prompt + JSON user payload,
+    expecting a strict JSON response shaped
+    {"source_language": <optional>, "segments": [...]}. Rotates across
+    every configured Groq key on failure. Returns (detected_language,
+    segments) — segments is an EMPTY list (never raises for a bad
+    response) if parsing fails or the response doesn't contain exactly
+    `expected_count` valid objects, so callers can retry/fallback safely.
     """
-    lang_lower = (target_language or "").strip().lower()
-    if "bengali" in lang_lower or "bangla" in lang_lower:
-        simplicity_clause = (
-            "SIMPLE, EVERYDAY WORDING (important): Use plain, spoken, "
-            "everyday Bangladeshi Bengali — the way people in Bangladesh "
-            "actually talk, not textbook/literary Bengali. Prefer common "
-            "words over heavy formal or Sanskrit-derived (তৎসম) vocabulary "
-            "whenever a simpler word means the same thing. Hook lines and "
-            "any punchy opening line especially should sound like popular "
-            "Bangladeshi short-video content — casual, direct, easy for "
-            "anyone to instantly understand, not stiff or academic. This "
-            "changes WORD CHOICE only — never change the meaning, remove "
-            "content, or alter the structure of what's being said.\n\n"
-        )
-    else:
-        simplicity_clause = (
-            "SIMPLE, EVERYDAY WORDING: Prefer plain, clear, commonly-used "
-            "words over formal or literary ones whenever they mean the "
-            "same thing, so a general audience instantly understands it. "
-            "This changes WORD CHOICE only — never change the meaning or "
-            "content.\n\n"
-        )
-
-    system_prompt = (
-        "You are an elite professional translator inside an automated "
-        "single-narrator video-dubbing pipeline. You will be given a JSON "
-        "array of timestamped transcript segments (a SMALL CHUNK of a "
-        "larger transcript), already transcribed from the original spoken "
-        f"language ({source_language}).\n\n"
-        "TASK 1 — TRANSLATION: Translate every segment's text PERFECTLY and "
-        f"naturally into {target_language}. Preserve tone, intent, idiom, and "
-        "natural spoken rhythm — this is for dubbing, not a literal "
-        "word-for-word gloss. Never leave a segment untranslated.\n\n"
-        + simplicity_clause +
-        "TASK 2 — COMPLETENESS (CRITICAL): The number of objects in the "
-        "output 'segments' array MUST exactly equal the number of input "
-        "segments in THIS chunk — a strict 1:1 mapping, same order. NEVER "
-        "skip, merge, drop, or duplicate a segment, even for very short "
-        "lines (a single word, 'yes'/'okay', a filler sound, laughter) — "
-        "translate or transliterate your best effort for every single one "
-        "and include it. Omitting even one segment is a critical failure. "
-        "Preserve the exact start/end timestamps given for each input "
-        "segment — do not invent, reorder, or renumber them.\n\n"
-        "OUTPUT — return STRICT JSON only. No prose, no markdown fences, no "
-        "commentary. Return exactly this shape:\n"
-        "{\n"
-        '  "source_language": "<language name>",\n'
-        '  "segments": [\n'
-        '    {"start": 0.0, "end": 3.2, "text": "<translated text>"}\n'
-        "  ]\n"
-        "}"
-    )
-    user_payload = json.dumps(
-        {"source_language": source_language, "transcript": chunk_segments},
-        ensure_ascii=False,
-    )
+    user_payload = json.dumps(user_payload_obj, ensure_ascii=False)
 
     def _do(api_key: str) -> str:
         client = get_groq_client(api_key)
@@ -899,8 +896,7 @@ async def _groq_translate_chunk(
             continue
     if raw is None:
         raise RuntimeError(
-            f"Groq translation failed on all {len(GROQ_API_KEYS)} "
-            f"configured key(s): {last_err}"
+            f"Groq call failed on all {len(GROQ_API_KEYS)} configured key(s): {last_err}"
         ) from last_err
 
     try:
@@ -908,7 +904,7 @@ async def _groq_translate_chunk(
     except (json.JSONDecodeError, TypeError):
         return None, []
 
-    out_segments = []
+    out_segments: List[Dict[str, object]] = []
     for s in data.get("segments", []):
         if not isinstance(s, dict):
             continue
@@ -923,9 +919,133 @@ async def _groq_translate_chunk(
         out_segments.append({"start": start, "end": end, "text": text})
 
     detected_lang = data.get("source_language")
-    if len(out_segments) != len(chunk_segments):
+    if len(out_segments) != expected_count:
         return (str(detected_lang) if detected_lang else None), []
     return (str(detected_lang) if detected_lang else None), out_segments
+
+
+async def _run_chunked_rewrite(
+    segments: List[Dict[str, object]],
+    chunk_fn,
+    chunk_size: int,
+    retries: int,
+) -> Tuple[List[Dict[str, object]], int, List[str], Optional[str]]:
+    """
+    Generic chunked-rewrite-with-retry-and-fallback driver, shared by
+    translate/polish/shorten. Splits `segments` into pieces of at most
+    `chunk_size`, calls `chunk_fn(piece) -> (lang_or_None, rewritten_or_[])`
+    per piece — retrying up to `retries` extra times if it doesn't come
+    back as a strict 1:1 match — and falls back to the ORIGINAL
+    (pre-rewrite) text for any piece that still fails after every retry.
+    GUARANTEES len(output) == len(segments) always; nothing is ever
+    silently dropped. Returns (rewritten_segments, fallback_count,
+    fallback_ranges, detected_language_or_None).
+    """
+    if not segments:
+        return [], 0, [], None
+
+    chunk_size = max(1, chunk_size)
+    chunks = [segments[i:i + chunk_size] for i in range(0, len(segments), chunk_size)]
+
+    detected_lang: Optional[str] = None
+    all_out: List[Dict[str, object]] = []
+    fallback_count = 0
+    fallback_ranges: List[str] = []
+
+    for chunk in chunks:
+        result_segments: List[Dict[str, object]] = []
+        for _attempt in range(1 + retries):
+            try:
+                lang, rewritten = await chunk_fn(chunk)
+            except Exception:  # noqa: BLE001
+                continue
+            if lang and detected_lang is None:
+                detected_lang = lang
+            if len(rewritten) == len(chunk):
+                result_segments = rewritten
+                break
+
+        if not result_segments:
+            fallback_count += len(chunk)
+            fallback_ranges.append(f"{chunk[0]['start']:.1f}s-{chunk[-1]['end']:.1f}s")
+            result_segments = [dict(s) for s in chunk]  # keep the original text as-is
+
+        all_out.extend(result_segments)
+
+    return all_out, fallback_count, fallback_ranges, detected_lang
+
+
+def _bengali_target(target_language: str) -> bool:
+    lang = (target_language or "").strip().lower()
+    return "bengali" in lang or "bangla" in lang
+
+
+async def _groq_translate_chunk(
+    chunk_segments: List[Dict[str, object]],
+    source_language: str,
+    target_language: str,
+) -> Tuple[Optional[str], List[Dict[str, object]]]:
+    """Translate ONE small chunk. See _run_chunked_rewrite for the retry/fallback contract."""
+    if _bengali_target(target_language):
+        simplicity_clause = (
+            "SIMPLE, EVERYDAY WORDING (important): Use plain, spoken, "
+            "everyday Bangladeshi Bengali — the way people in Bangladesh "
+            "actually talk, not textbook/literary Bengali. Prefer common "
+            "words over heavy formal or Sanskrit-derived (তৎসম) vocabulary "
+            "whenever a simpler word means the same thing. Hook lines and "
+            "any punchy opening line especially should sound like popular "
+            "Bangladeshi short-video content — casual, direct, easy for "
+            "anyone to instantly understand, not stiff or academic. This "
+            "changes WORD CHOICE only — never change the meaning, remove "
+            "content, or alter the structure of what's being said.\n\n"
+        )
+    else:
+        simplicity_clause = (
+            "SIMPLE, EVERYDAY WORDING: Prefer plain, clear, commonly-used "
+            "words over formal or literary ones whenever they mean the "
+            "same thing, so a general audience instantly understands it. "
+            "This changes WORD CHOICE only — never change the meaning or "
+            "content.\n\n"
+        )
+
+    system_prompt = (
+        "You are an elite professional translator inside an automated "
+        "single-narrator video-dubbing pipeline. You will be given a JSON "
+        "array of timestamped transcript segments (a SMALL CHUNK of a "
+        "larger transcript), already transcribed from the original spoken "
+        f"language ({source_language}).\n\n"
+        "TASK 1 — TRANSLATION: Translate every segment's text PERFECTLY and "
+        f"naturally into {target_language}. Preserve tone, intent, idiom, and "
+        "natural spoken rhythm — this is for dubbing, not a literal "
+        "word-for-word gloss. Never leave a segment untranslated. Pay close "
+        "attention to PRONOUN GENDER (he/she, boyfriend/girlfriend, etc.) — "
+        "some source languages (e.g. Mandarin 他/她) sound identical for "
+        "different genders, so infer the correct gender carefully from "
+        "context rather than defaulting or guessing.\n\n"
+        + simplicity_clause +
+        "TASK 2 — COMPLETENESS (CRITICAL): The number of objects in the "
+        "output 'segments' array MUST exactly equal the number of input "
+        "segments in THIS chunk — a strict 1:1 mapping, same order. NEVER "
+        "skip, merge, drop, or duplicate a segment, even for very short "
+        "lines (a single word, 'yes'/'okay', a filler sound, laughter) — "
+        "translate or transliterate your best effort for every single one "
+        "and include it. Omitting even one segment is a critical failure. "
+        "Preserve the exact start/end timestamps given for each input "
+        "segment — do not invent, reorder, or renumber them.\n\n"
+        "OUTPUT — return STRICT JSON only. No prose, no markdown fences, no "
+        "commentary. Return exactly this shape:\n"
+        "{\n"
+        '  "source_language": "<language name>",\n'
+        '  "segments": [\n'
+        '    {"start": 0.0, "end": 3.2, "text": "<translated text>"}\n'
+        "  ]\n"
+        "}"
+    )
+    return await _groq_json_segments_call(
+        system_prompt,
+        {"source_language": source_language, "transcript": chunk_segments},
+        expected_count=len(chunk_segments),
+    )
 
 
 async def groq_translate_all(
@@ -936,76 +1056,166 @@ async def groq_translate_all(
     """
     Translate the WHOLE transcript in small chunks (TRANSLATE_CHUNK_SIZE
     lines at a time) so a single LLM hiccup can only ever affect a few
-    lines. Every chunk is retried up to TRANSLATE_CHUNK_RETRIES times if it
-    doesn't come back as a strict 1:1 match; if it still fails after every
-    retry, that chunk falls back to the LITERAL SOURCE-LANGUAGE TEXT for
-    just those lines (never silently dropped) and the caller is told
-    exactly which ones via `fallback_count`. Guarantees
-    len(output_segments) == len(transcript_segments) ALWAYS.
+    lines. Guarantees len(output_segments) == len(transcript_segments)
+    ALWAYS — see _run_chunked_rewrite.
     """
     if not transcript_segments:
         raise RuntimeError("Nothing to translate — the transcript is empty.")
 
-    chunks: List[List[Dict[str, object]]] = [
-        transcript_segments[i:i + TRANSLATE_CHUNK_SIZE]
-        for i in range(0, len(transcript_segments), TRANSLATE_CHUNK_SIZE)
+    payload = [
+        {"start": float(seg.get("start", 0.0)), "end": float(seg.get("end", 0.0)),
+         "text": seg.get("text", "")}
+        for seg in transcript_segments
     ]
 
-    detected_source_language: Optional[str] = None
-    all_segments: List[Dict[str, object]] = []
-    fallback_count = 0
-    fallback_ranges: List[str] = []
+    async def chunk_fn(chunk):
+        return await _groq_translate_chunk(chunk, source_language, target_language)
 
-    for chunk in chunks:
-        payload_chunk = [
-            {
-                "start": float(seg.get("start", 0.0)),
-                "end": float(seg.get("end", 0.0)),
-                "text": seg.get("text", ""),
-            }
-            for seg in chunk
-        ]
-
-        result_segments: List[Dict[str, object]] = []
-        last_err: Optional[Exception] = None
-        for attempt in range(1 + TRANSLATE_CHUNK_RETRIES):
-            try:
-                lang, translated = await _groq_translate_chunk(
-                    payload_chunk, source_language, target_language,
-                )
-            except Exception as exc:  # noqa: BLE001
-                last_err = exc
-                continue
-            if lang and detected_source_language is None:
-                detected_source_language = lang
-            if len(translated) == len(chunk):
-                result_segments = translated
-                break
-
-        if not result_segments:
-            # Every retry failed to come back 1:1 — NEVER drop these lines:
-            # fall back to the original source-language text so they still
-            # get voiced, and note exactly which range fell back.
-            fallback_count += len(chunk)
-            fallback_ranges.append(
-                f"{payload_chunk[0]['start']:.1f}s-{payload_chunk[-1]['end']:.1f}s"
-            )
-            result_segments = [
-                {"start": float(seg.get("start", 0.0)), "end": float(seg.get("end", 0.0)),
-                 "text": str(seg.get("text", "")).strip() or "..."}
-                for seg in chunk
-            ]
-
-        all_segments.extend(result_segments)
+    all_segments, fallback_count, fallback_ranges, detected_lang = await _run_chunked_rewrite(
+        payload, chunk_fn, TRANSLATE_CHUNK_SIZE, TRANSLATE_CHUNK_RETRIES,
+    )
 
     return {
-        "source_language": detected_source_language or source_language,
+        "source_language": detected_lang or source_language,
         "segments": all_segments,
         "input_count": len(transcript_segments),
         "output_count": len(all_segments),
         "fallback_count": fallback_count,
         "fallback_ranges": fallback_ranges,
     }
+
+
+async def _groq_polish_chunk(
+    chunk_pairs: List[Dict[str, object]],
+    target_language: str,
+) -> Tuple[Optional[str], List[Dict[str, object]]]:
+    """
+    Polish ONE small chunk of ALREADY-TRANSLATED text for natural
+    Bangladeshi phrasing. `chunk_pairs` items are
+    {start, end, text (current translation), original (source-language
+    text, for meaning-fidelity context)}.
+    """
+    system_prompt = (
+        "You are a native Bangladeshi Bengali script editor for a "
+        "short-video dubbing pipeline. You will be given a JSON array of "
+        "segments, each with the ORIGINAL source-language line and the "
+        "CURRENT Bengali translation, in order.\n\n"
+        "TASK: Rewrite ONLY the wording of the Bengali translation, where "
+        "it needs it, so it sounds like natural, punchy Bangladeshi "
+        "short-video/hook-style Bengali — the way real Bangladeshi "
+        "creators actually talk — NOT a stiff, literal, textbook "
+        "translation. Specifically:\n"
+        "- Prefer common ENGLISH LOANWORDS written in Bengali script for "
+        "globally-recognized terms Bangladeshi audiences already use "
+        "directly in casual speech (e.g. 'সিরিয়াল কিলার' instead of a "
+        "stiff literal equivalent like 'ধারাবাহিক হত্যাকারী', similarly "
+        "'থ্রিলার', 'টুইস্ট', etc.) — use judgment, not every word needs "
+        "an English loanword, only where it's genuinely more natural.\n"
+        "- Cross-check the CURRENT translation against the ORIGINAL for "
+        "gender/pronoun accuracy (he/she, boyfriend/girlfriend, etc.) and "
+        "fix any mismatch you find.\n"
+        "- Keep it simple, conversational, and avoid heavy formal/তৎসম "
+        "vocabulary.\n"
+        "- Most lines may need NO change at all if they're already "
+        "natural and correct — only rewrite lines that genuinely sound "
+        "stiff, unnatural, or mistranslated. If a line is already good, "
+        "return it completely unchanged.\n\n"
+        "CRITICAL RULES:\n"
+        "- This is a WORDING polish, not a re-translation — NEVER change "
+        "the underlying meaning, remove information, or add new "
+        "information.\n"
+        "- The output 'segments' array MUST have EXACTLY the same number "
+        "of objects, in the same order, with the same start/end values as "
+        "the input. Never drop, merge, split, or reorder a segment.\n\n"
+        "OUTPUT — strict JSON only, no prose, no markdown fences:\n"
+        '{"segments": [{"start": 0.0, "end": 3.2, "text": "<possibly-revised Bengali>"}]}'
+    )
+    payload = [
+        {"start": p["start"], "end": p["end"], "original": p.get("original", ""), "text": p["text"]}
+        for p in chunk_pairs
+    ]
+    return await _groq_json_segments_call(
+        system_prompt, {"segments": payload}, expected_count=len(chunk_pairs),
+    )
+
+
+async def groq_polish_all(
+    translated_segments: List[Dict[str, object]],
+    raw_segments: List[Dict[str, object]],
+    target_language: str,
+) -> dict:
+    """
+    Bengali-only "polish" pass: reviews the already-translated script
+    (with the original text alongside for context) and rewrites lines
+    that sound stiff/unnatural/mistranslated into natural, everyday
+    Bangladeshi phrasing. Guarantees len(output) == len(translated_segments)
+    ALWAYS (falls back to the pre-polish translation for any chunk that
+    can't be verified 1:1 after retries — never drops or corrupts a line).
+    No-op (returns the input unchanged) if target_language isn't Bengali.
+    """
+    if not _bengali_target(target_language) or not translated_segments:
+        return {
+            "segments": translated_segments, "fallback_count": 0,
+            "fallback_ranges": [], "polished": False,
+        }
+
+    payload = []
+    for i, seg in enumerate(translated_segments):
+        original_text = raw_segments[i]["text"] if i < len(raw_segments) else ""
+        payload.append({
+            "start": float(seg.get("start", 0.0)), "end": float(seg.get("end", 0.0)),
+            "text": seg.get("text", ""), "original": original_text,
+        })
+
+    async def chunk_fn(chunk):
+        return await _groq_polish_chunk(chunk, target_language)
+
+    all_segments, fallback_count, fallback_ranges, _lang = await _run_chunked_rewrite(
+        payload, chunk_fn, TRANSLATE_CHUNK_SIZE, TRANSLATE_CHUNK_RETRIES,
+    )
+
+    return {
+        "segments": all_segments, "fallback_count": fallback_count,
+        "fallback_ranges": fallback_ranges, "polished": True,
+    }
+
+
+async def _groq_shorten_chunk(
+    chunk_segments: List[Dict[str, object]],
+    target_language: str,
+    shrink_fraction: float,
+) -> Tuple[Optional[str], List[Dict[str, object]]]:
+    """
+    Condense an already-translated chunk so it takes noticeably less time
+    to speak, while preserving meaning and the exact 1:1 structure. Used
+    when a chunk's speech is estimated/measured to run past MAX_SPEED_RATIO
+    of its video time-span (see _produce_one_chunk_audio) — shortening the
+    SCRIPT is preferred over speeding the VOICE up further.
+    """
+    pct = max(5, min(60, int(round(shrink_fraction * 100))))
+    system_prompt = (
+        "You are editing an already-translated dubbing script that runs "
+        "too long for its video time slot. You will get a JSON array of "
+        "{start, end, text} segments, in order.\n\n"
+        f"TASK: Rewrite the 'text' of each segment to be MORE CONCISE — "
+        f"aim to cut roughly {pct}% off the total character count across "
+        "all segments combined — while preserving the exact meaning and "
+        "tone. Cut filler words and redundant phrasing, pick shorter "
+        "synonyms and tighter sentence structure; do NOT remove actual "
+        "information or change what is being said. Focus your cuts on "
+        "the LONGER/wordier segments — a segment that's already short "
+        "and essential can stay as-is if there's nothing safe to trim.\n\n"
+        "CRITICAL: the output 'segments' array MUST have EXACTLY the same "
+        "number of objects, in the same order, with the same start/end "
+        "values as the input. Never drop, merge, split, or reorder a "
+        "segment.\n\n"
+        "OUTPUT — strict JSON only, no prose, no markdown fences:\n"
+        '{"segments": [{"start": 0.0, "end": 3.2, "text": "<shortened text>"}]}'
+    )
+    return await _groq_json_segments_call(
+        system_prompt, {"segments": chunk_segments}, expected_count=len(chunk_segments),
+    )
+
 
 
 # --------------------------------------------------------------------------- #
@@ -1186,21 +1396,29 @@ def _split_into_tts_chunks(
 ) -> List[Tuple[float, float, List[Segment]]]:
     """
     Decide how many separate TTS requests are needed, and which segments +
-    which ORIGINAL-VIDEO TIME-SPAN belong to each. A short video is always
-    ONE chunk covering the whole thing (identical to the old single-request
-    behavior). A longer video is split at natural segment boundaries —
-    never mid-sentence — the moment either the accumulated video-time span
-    or the accumulated character count would cross a safe budget,
-    whichever comes first. The returned chunks always partition
-    [0, video_duration] end to end with no gaps or overlaps, so each
-    chunk's own duration-matching step (see _produce_one_chunk_audio) keeps
-    that piece of audio aligned with the right part of the video, and
-    concatenating them afterward reproduces the full video's length.
+    which ORIGINAL-VIDEO TIME-SPAN belong to each.
+
+    Split PURELY by character count (TTS_CHUNK_MAX_CHARS) — NOT by video
+    duration. Video length isn't a reliable proxy for how much has to be
+    said: a long video with sparse dialogue can safely be one request,
+    while a short, dense video can still blow a single request's quota.
+    Character count (of the text actually being sent) is what really
+    drives the per-key token quota, so it's what decides the split.
+
+    Splits happen at natural segment boundaries — never mid-sentence — the
+    moment the accumulated character count would cross the budget. The
+    returned chunks always partition [0, video_duration] end to end with
+    no gaps or overlaps, so each chunk's own duration-matching step (see
+    _produce_one_chunk_audio) keeps that piece of audio aligned with the
+    right part of the video, and concatenating them afterward reproduces
+    the full video's length. The per-chunk TIME SPAN computed here is only
+    ever used as an ESTIMATE/target for fitting that piece's audio — never
+    as a reason to split in the first place.
     """
     if not segments:
         return []
     total_chars = sum(len(s.text) for s in segments)
-    if video_duration <= TTS_SINGLE_REQUEST_MAX_SECONDS and total_chars <= TTS_CHUNK_MAX_CHARS:
+    if total_chars <= TTS_CHUNK_MAX_CHARS:
         return [(0.0, video_duration, list(segments))]
 
     chunks: List[Tuple[float, float, List[Segment]]] = []
@@ -1209,9 +1427,8 @@ def _split_into_tts_chunks(
     current_chars = 0
 
     for seg in segments:
-        would_span = seg.end - current_start
         would_chars = current_chars + len(seg.text)
-        if current and (would_span > TTS_CHUNK_TARGET_SECONDS or would_chars > TTS_CHUNK_MAX_CHARS):
+        if current and would_chars > TTS_CHUNK_MAX_CHARS:
             chunk_end = current[-1].end  # cut at the last natural pause, not mid-sentence
             chunks.append((current_start, chunk_end, current))
             current = []
@@ -1226,15 +1443,17 @@ def _split_into_tts_chunks(
         # sum to exactly video_duration with no trailing gap.
         chunks.append((current_start, video_duration, current))
 
-    # Avoid a wasteful tiny trailing chunk (e.g. one leftover 5s segment
-    # getting its own full TTS request): fold a short tail into the
-    # previous chunk instead, as long as that doesn't blow the char budget.
-    MIN_TAIL_SECONDS = 30.0
+    # Avoid a wasteful tiny trailing chunk (a handful of leftover
+    # characters getting their own full TTS request): fold a short tail
+    # into the previous chunk instead, as long as that doesn't blow the
+    # char budget by much.
+    MIN_TAIL_CHARS = 200
     if len(chunks) >= 2:
-        last_start, last_end, last_segs = chunks[-1]
-        if (last_end - last_start) < MIN_TAIL_SECONDS:
-            prev_start, prev_end, prev_segs = chunks[-2]
-            merged_chars = sum(len(s.text) for s in prev_segs) + sum(len(s.text) for s in last_segs)
+        _, last_end, last_segs = chunks[-1]
+        last_chars = sum(len(s.text) for s in last_segs)
+        if last_chars < MIN_TAIL_CHARS:
+            prev_start, _, prev_segs = chunks[-2]
+            merged_chars = sum(len(s.text) for s in prev_segs) + last_chars
             if merged_chars <= TTS_CHUNK_MAX_CHARS * 1.15:
                 chunks[-2] = (prev_start, last_end, prev_segs + last_segs)
                 chunks.pop()
@@ -1346,8 +1565,7 @@ def _tts_style_hint(target_language: str) -> str:
         "Speak naturally, clearly, and expressively, with natural pacing "
         "and brief natural pauses between sentences"
     )
-    lang = (target_language or "").strip().lower()
-    if "bengali" in lang or "bangla" in lang:
+    if _bengali_target(target_language):
         base += (
             ". Use natural Bangladeshi Bengali (Bangladesh, standard Dhaka "
             "pronunciation) — not the West Bengal/Indian Bengali accent"
@@ -1355,8 +1573,39 @@ def _tts_style_hint(target_language: str) -> str:
     return base
 
 
+def _estimate_speaking_seconds(text: str) -> float:
+    """
+    Rough, language-agnostic estimate of spoken duration from character
+    count — used only to PROACTIVELY flag a chunk that's likely to need
+    shortening, before spending a real TTS request on it. Not exact; the
+    real, authoritative check is always the ACTUAL generated audio's
+    measured duration after TTS (see _produce_one_chunk_audio).
+    """
+    return max(0.1, len(text) / CHARS_PER_SECOND_ESTIMATE)
+
+
+async def _shorten_segments(
+    segments: List[Dict[str, object]], target_language: str, shrink_fraction: float,
+) -> List[Dict[str, object]]:
+    """
+    Best-effort wrapper around _groq_shorten_chunk with the SAME
+    retry/fallback guarantee as translate/polish (via _run_chunked_rewrite —
+    treated as a single piece here since it's already a small, pre-chunked
+    slice). Falls back to the UNSHORTENED text if the shorten call can't be
+    verified 1:1 even after a retry, so a failed attempt never corrupts or
+    drops a line — it just leaves that text as long as it was.
+    """
+    async def chunk_fn(chunk):
+        return await _groq_shorten_chunk(chunk, target_language, shrink_fraction)
+
+    out, _fb, _ranges, _lang = await _run_chunked_rewrite(
+        segments, chunk_fn, chunk_size=max(1, len(segments)), retries=1,
+    )
+    return out
+
+
 async def _produce_one_chunk_audio(
-    chunk_text: str,
+    chunk_segments: List[Segment],
     target_seconds: float,
     voice_name: str,
     target_language: str,
@@ -1365,81 +1614,125 @@ async def _produce_one_chunk_audio(
     api_keys: Optional[List[str]] = None,
 ) -> AsyncGenerator[dict, None]:
     """
-    Runs the FULL per-chunk voice pipeline for one piece of script: ONE
-    Gemini TTS request -> adaptive silence-trim ladder -> never-below-1.0x
-    speed match against `target_seconds`. This is the EXACT SAME logic as
-    the original single-request pipeline (unchanged) — just scoped to one
-    chunk of the transcript instead of the whole video, so it can be run
-    once per chunk, concurrently with other chunks. `api_keys`, when given,
-    restricts this chunk's TTS attempt to its OWN slice of the available
-    keys (see _partition_keys_for_chunks). Yields SSE events throughout;
-    the FINAL yielded item is always
+    Runs the FULL per-chunk voice pipeline for one piece of script:
+    Gemini TTS -> adaptive silence-trim ladder -> speed match against
+    `target_seconds`, capped hard at MAX_SPEED_RATIO (1.20x) — speech is
+    NEVER slowed below 1.0x, and never sped up past the cap either. If a
+    PROACTIVE character-count estimate suggests the script is too long
+    for the slot, it's shortened BEFORE the first TTS call; if the
+    ACTUAL measured result still comes back over the cap, it's shortened
+    again and regenerated once more (REACTIVE) — bounded to
+    MAX_SHORTEN_ATTEMPTS total tries. If it's still over after that
+    (rare), speed is capped at exactly MAX_SPEED_RATIO and a small
+    residual overflow may remain — the caller (synthesize_single_track)
+    handles that by extending the video's ending rather than ever cutting
+    off speech. Yields SSE events throughout; the FINAL yielded item is
+    always
     {"_chunk_result": {"path": Path, "model": str, "applied_ratio": float}}.
     """
-    raw_audio = seg_dir / f"raw_{tag}.wav"
+    working_segments: List[Dict[str, object]] = [
+        {"start": s.start, "end": s.end, "text": s.text} for s in chunk_segments
+    ]
+
+    # PROACTIVE: a rough pre-TTS estimate -> shorten before spending a real
+    # TTS request if the script looks likely to need more than the cap.
+    est_seconds = sum(_estimate_speaking_seconds(s["text"]) for s in working_segments)
+    est_ratio = (est_seconds / target_seconds) if target_seconds > 0 else 1.0
+    if est_ratio > MAX_SPEED_RATIO:
+        shrink = 1.0 - (MAX_SPEED_RATIO / est_ratio)
+        yield sse_log(
+            f"[INFO] Estimated speaking time (~{est_seconds:.1f}s) looks like it "
+            f"would need ~{est_ratio:.2f}x speed for this {target_seconds:.1f}s "
+            f"slot (above the {MAX_SPEED_RATIO}x ceiling) -> shortening the "
+            f"script by ~{int(shrink * 100)}% in advance, before generating voice..."
+        )
+        working_segments = await _shorten_segments(working_segments, target_language, shrink)
+
     model_used: Optional[str] = None
-    async for ev in gemini_tts_with_fallback(
-        text=chunk_text,
-        voice_name=voice_name,
-        out_wav=raw_audio,
-        style_hint=_tts_style_hint(target_language),
-        api_keys=api_keys,
-    ):
-        if "_tts_result" in ev:
-            model_used = ev["_tts_result"]
-        else:
-            yield ev
-    yield sse_log(f"[SUCCESS] Voice generated via {model_used}.")
-
-    trimmed_path, trimmed_dur, ms_used, trim_logs = await _adaptive_silence_trim(
-        raw_audio, target_seconds, seg_dir
-    )
-    for lg in trim_logs:
-        yield lg
-    yield sse_log(
-        f"[INFO] Silence-trim window: {ms_used}ms -> {trimmed_dur:.2f}s of "
-        f"speech (target {target_seconds:.2f}s)."
-    )
-
-    ratio = (trimmed_dur / target_seconds) if target_seconds > 0 else 1.0
-
-    # HARD RULE: dubbed speech is NEVER slowed below its natural (1.0x)
-    # pace — a slowed-down voice sounds unnatural/robotic, which is worse
-    # than a bit of trailing silence. If the speech is shorter than its
-    # target span, it plays at its natural speed and the remaining time is
-    # filled with silence later by the mux step's apad+shortest. Only a
-    # too-LONG speech track ever gets sped up (pitch preserved, atempo).
     fitted_path = seg_dir / f"fitted_{tag}.wav"
     applied_ratio = 1.0
-    if target_seconds <= 0 or ratio <= 1.02:
-        yield sse_log(
-            "[INFO] Speech fits within this segment's length -> kept at natural "
-            "(1.0x) speed. Speed is never reduced below normal — any leftover "
-            "time is silent, not slowed-down speech."
+    trimmed_path = raw_audio = None  # noqa: F841 (assigned in loop, used after)
+
+    for attempt in range(1, MAX_SHORTEN_ATTEMPTS + 1):
+        chunk_text = "\n".join(
+            str(s["text"]).strip() for s in working_segments if str(s["text"]).strip()
         )
-        await _encode_wav(["-i", str(trimmed_path)], fitted_path)
-    else:
-        applied_ratio = max(HARD_SPEED_MIN, min(HARD_SPEED_MAX, ratio))
-        yield sse_log(f"[INFO] Speech is longer than this segment -> speeding audio up {ratio:.3f}x (pitch preserved).")
-        if ratio > HARD_SPEED_MAX:
+        raw_audio = seg_dir / f"raw_{tag}_{attempt}.wav"
+        async for ev in gemini_tts_with_fallback(
+            text=chunk_text,
+            voice_name=voice_name,
+            out_wav=raw_audio,
+            style_hint=_tts_style_hint(target_language),
+            api_keys=api_keys,
+        ):
+            if "_tts_result" in ev:
+                model_used = ev["_tts_result"]
+            else:
+                yield ev
+        yield sse_log(f"[SUCCESS] Voice generated via {model_used}.")
+
+        trimmed_path, trimmed_dur, ms_used, trim_logs = await _adaptive_silence_trim(
+            raw_audio, target_seconds, seg_dir
+        )
+        for lg in trim_logs:
+            yield lg
+        yield sse_log(
+            f"[INFO] Silence-trim window: {ms_used}ms -> {trimmed_dur:.2f}s of "
+            f"speech (target {target_seconds:.2f}s)."
+        )
+
+        ratio = (trimmed_dur / target_seconds) if target_seconds > 0 else 1.0
+
+        # HARD RULE #1: dubbed speech is NEVER slowed below its natural
+        # (1.0x) pace — a slowed-down voice sounds unnatural/robotic,
+        # which is worse than a bit of trailing silence (filled in later
+        # by the mux step's apad+shortest).
+        if target_seconds <= 0 or ratio <= 1.02:
             yield sse_log(
-                f"[WARN] Required speed-up {ratio:.3f}x is extreme and has been "
-                "clamped to a safe range — this segment's audio may not exactly "
-                "match its video time-span."
+                "[INFO] Speech fits within this segment's length -> kept at "
+                "natural (1.0x) speed. Speed is never reduced below normal — "
+                "any leftover time is silent, not slowed-down speech."
             )
-        elif ratio > SOFT_SPEED_MAX:
+            await _encode_wav(["-i", str(trimmed_path)], fitted_path)
+            applied_ratio = 1.0
+            break
+
+        # HARD RULE #2: speed is never pushed past MAX_SPEED_RATIO — if a
+        # single pass gets there, apply it and we're done.
+        if ratio <= MAX_SPEED_RATIO:
+            applied_ratio = ratio
+            yield sse_log(f"[INFO] Speech is longer than this segment -> speeding audio up {ratio:.3f}x (pitch preserved).")
+            await time_stretch_to_duration(trimmed_path, target_seconds, fitted_path, False)
+            break
+
+        # Over the cap: prefer shortening the SCRIPT over speeding the
+        # VOICE up further.
+        if attempt < MAX_SHORTEN_ATTEMPTS:
+            shrink = 1.0 - (MAX_SPEED_RATIO / ratio)
             yield sse_log(
-                f"[WARN] Speed-up {ratio:.3f}x is on the higher side — the "
-                "audio may sound a little faster than fully natural, though "
-                "pitch is preserved throughout."
+                f"[WARN] Measured speech ({trimmed_dur:.2f}s) still needs "
+                f"{ratio:.3f}x for this {target_seconds:.1f}s slot — above the "
+                f"{MAX_SPEED_RATIO}x ceiling. Shortening the script by "
+                f"~{int(shrink * 100)}% and regenerating the voice (attempt "
+                f"{attempt + 1}/{MAX_SHORTEN_ATTEMPTS})..."
             )
-        # We deliberately do NOT run a second corrective speed pass even if
-        # the fit is a little off target: re-running a time-stretch on
-        # audio that's already been stretched once compounds artifacts and
-        # is a real source of "broken"-sounding speech. A single pass gets
-        # within a few milliseconds in practice, and apad+shortest at mux
-        # time silently absorbs any tiny remaining gap.
-        await time_stretch_to_duration(trimmed_path, target_seconds, fitted_path, False)
+            working_segments = await _shorten_segments(working_segments, target_language, shrink)
+            continue
+
+        # Out of shortening attempts: cap speed at EXACTLY the ceiling —
+        # never higher, per hard rule. A residual overflow may remain;
+        # the orchestrator extends the video's ending to cover it rather
+        # than ever cutting off speech.
+        applied_ratio = MAX_SPEED_RATIO
+        yield sse_log(
+            f"[WARN] Even after {MAX_SHORTEN_ATTEMPTS} shortening attempt(s), "
+            f"this segment still needs {ratio:.3f}x. Speed is capped at "
+            f"{MAX_SPEED_RATIO}x (never higher) — the audio may run a little "
+            "past its slot; the video's ending will be extended slightly to "
+            "cover it rather than cutting any words off."
+        )
+        await time_stretch_to_duration(trimmed_path, trimmed_dur / MAX_SPEED_RATIO, fitted_path, False)
+        break
 
     fitted_dur = await probe_duration(fitted_path)
     yield sse_log(f"[SUCCESS] Segment audio ready: {fitted_dur:.2f}s (target {target_seconds:.2f}s).")
@@ -1449,6 +1742,7 @@ async def _produce_one_chunk_audio(
 
 async def _maybe_append_ending_cta(
     sess: Session, main_audio_path: Path, seg_dir: Path,
+    base_video_path: Optional[Path] = None,
 ) -> AsyncGenerator[dict, None]:
     """
     Optional feature: if the person typed a custom "ending CTA" line and
@@ -1458,13 +1752,16 @@ async def _maybe_append_ending_cta(
     append it after the main dubbed track, and freeze-frame-extend the
     video by exactly that much so audio and video stay in sync. Off by
     default; only runs when sess.ending_cta is non-empty (checked by the
-    caller before this is invoked).
+    caller before this is invoked). `base_video_path` lets the caller pass
+    an already-extended video (e.g. from the speed-overflow safety net) as
+    the starting point instead of the original upload.
 
     Yields SSE events throughout; the FINAL yielded item is always
     {"_cta_result": {"audio_path": Path, "video_path": Path}} — the new
     (longer) audio and video paths the caller should mux together instead
     of the originals.
     """
+    base_video_path = base_video_path or sess.video_path
     cta_text = sess.ending_cta.strip()
     yield sse_progress(92, "Adding ending CTA")
     yield sse_log(f"[INFO] Ending CTA enabled: generating \"{cta_text[:80]}\" as one extra spoken line...")
@@ -1494,7 +1791,7 @@ async def _maybe_append_ending_cta(
 
     yield sse_log(f"[INFO] Extending the video by {trimmed_dur:.2f}s (freeze-frame on the last frame) to fit the CTA...")
     extended_video = seg_dir / "extended_for_cta.mp4"
-    await extend_video_with_freeze_frame(sess.video_path, trimmed_dur, extended_video)
+    await extend_video_with_freeze_frame(base_video_path, trimmed_dur, extended_video)
 
     combined_audio = seg_dir / "with_cta.wav"
     await concat_audio_files([main_audio_path, trimmed_cta], combined_audio)
@@ -1559,16 +1856,16 @@ async def synthesize_single_track(sess: Session) -> AsyncGenerator[dict, None]:
 
     async def _worker(idx: int, c_start: float, c_end: float, c_segments: List[Segment]) -> None:
         n = idx + 1
-        chunk_text = "\n".join(s.text.strip() for s in c_segments if s.text.strip())
         target_seconds = max(0.01, c_end - c_start)
+        total_chars = sum(len(s.text) for s in c_segments)
         label = f"Part {n}/{len(chunks)}" if multi else "Voice"
         await queue.put(sse_log(
-            f"[INFO] {label}: sending {len(chunk_text)} chars ({len(c_segments)} "
-            f"line(s), {target_seconds:.1f}s of video) as ONE Gemini TTS request..."
+            f"[INFO] {label}: {total_chars} chars ({len(c_segments)} line(s), "
+            f"{target_seconds:.1f}s of video) queued for voice generation..."
         ))
         try:
             async for ev in _produce_one_chunk_audio(
-                chunk_text, target_seconds, sess.single_voice, sess.target_language,
+                c_segments, target_seconds, sess.single_voice, sess.target_language,
                 seg_dir, tag=f"c{idx}", api_keys=key_pools[idx],
             ):
                 if "_chunk_result" in ev:
@@ -1626,12 +1923,31 @@ async def synthesize_single_track(sess: Session) -> AsyncGenerator[dict, None]:
     fitted_dur = await probe_duration(fitted_path)
     yield sse_log(f"[SUCCESS] Final dubbed audio: {fitted_dur:.2f}s (target {sess.video_duration:.2f}s).")
 
-    # Optional ending CTA: appends one more spoken line after the main
-    # content and freeze-frame-extends the video to give it room. Off by
-    # default; only runs when the person typed CTA text and enabled it.
+    # Safety net: if some chunk(s) still ran over MAX_SPEED_RATIO even
+    # after every shortening attempt (rare), the joined audio can end up
+    # slightly longer than the video. Rather than let the final mux's
+    # apad+shortest silently cut off the tail of the dubbed speech, extend
+    # the video's ending (freeze-frame on the last frame) by that much —
+    # same technique as the ending-CTA feature.
     mux_video_path = sess.video_path
+    overflow_seconds = max(0.0, fitted_dur - sess.video_duration) if sess.video_duration > 0 else 0.0
+    if overflow_seconds > 0.2:
+        yield sse_log(
+            f"[WARN] Even with script-shortening, the combined dubbed audio "
+            f"ran {overflow_seconds:.2f}s long — extending the video's ending "
+            "(freeze-frame on the last frame) by that much rather than "
+            "cutting off any spoken words."
+        )
+        extended_for_overflow = seg_dir / "extended_for_overflow.mp4"
+        await extend_video_with_freeze_frame(sess.video_path, overflow_seconds, extended_for_overflow)
+        mux_video_path = extended_for_overflow
+
+    # Optional ending CTA: appends one more spoken line after the main
+    # content and freeze-frame-extends the video (from mux_video_path,
+    # which may already be overflow-extended above) to give it room. Off
+    # by default; only runs when the person typed CTA text and enabled it.
     if sess.ending_cta.strip():
-        async for ev in _maybe_append_ending_cta(sess, fitted_path, seg_dir):
+        async for ev in _maybe_append_ending_cta(sess, fitted_path, seg_dir, base_video_path=mux_video_path):
             if "_cta_result" in ev:
                 res = ev["_cta_result"]
                 fitted_path = res["audio_path"]
@@ -1754,7 +2070,37 @@ async def run_dub(sess: Session) -> AsyncGenerator[dict, None]:
                 "instead of being dropped."
             )
 
-        yield sse_progress(50, f"Translated all {len(sess.segments)} segment(s), none dropped")
+        yield sse_progress(45, f"Translated all {len(sess.segments)} segment(s), none dropped")
+
+        if _bengali_target(sess.target_language):
+            yield sse_log(
+                "[INFO] Polishing the Bengali script for natural Bangladeshi "
+                "phrasing (common loanwords for globally-recognized terms, "
+                "gender/pronoun double-check, casual hook-style wording)..."
+            )
+            try:
+                polish_result = await groq_polish_all(
+                    translated_segments=[asdict(s) for s in sess.segments],
+                    raw_segments=[asdict(s) for s in sess.raw_segments],
+                    target_language=sess.target_language,
+                )
+            except Exception as exc:  # noqa: BLE001
+                yield sse_log(f"[WARN] Polish pass failed, keeping the plain translation: {exc}")
+                polish_result = None
+
+            if polish_result is not None:
+                sess.segments = [Segment(**s) for s in polish_result["segments"]]
+                if polish_result["fallback_count"] > 0:
+                    ranges = ", ".join(polish_result["fallback_ranges"])
+                    yield sse_log(
+                        f"[WARN] {polish_result['fallback_count']} line(s) (around "
+                        f"{ranges}) could not be safely polished after retries, so "
+                        "the plain (pre-polish) translation was kept for those "
+                        "lines instead of being dropped or corrupted."
+                    )
+                yield sse_log("[SUCCESS] Script polished.")
+
+        yield sse_progress(50, "Script ready")
 
         async for ev in synthesize_single_track(sess):
             yield ev
