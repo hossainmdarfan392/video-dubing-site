@@ -218,6 +218,50 @@ body{
 }
 .switch input:checked + .slider{background:linear-gradient(120deg,var(--sky),var(--sky-soft));}
 .switch input:checked + .slider::before{transform:translateX(18px);}
+
+/* TTS model selection: Single/Multiple segmented switch + model pills */
+.seg{
+  display:flex;background:#f7fbff;border:1px solid #e3f0fb;
+  border-radius:var(--radius-sm);padding:4px;gap:4px;
+}
+.seg button{
+  flex:1;border:none;background:transparent;cursor:pointer;
+  padding:9px 10px;border-radius:9px;font-family:inherit;
+  font-size:13px;font-weight:650;color:var(--ink-soft);
+  transition:background .2s ease,color .2s ease,box-shadow .2s ease;
+}
+.seg button.active{
+  background:#fff;color:var(--ink);
+  box-shadow:0 4px 12px -6px rgba(0,110,190,0.35);
+}
+.model-list{
+  display:flex;flex-direction:column;gap:8px;margin-top:10px;
+}
+.model-opt{
+  display:flex;align-items:center;gap:11px;
+  padding:10px 12px;border-radius:var(--radius-sm);
+  border:1px solid var(--line);background:#fbfdff;cursor:pointer;
+  transition:border-color .2s ease,background .2s ease,box-shadow .2s ease;
+  position:relative;
+}
+.model-opt:hover{border-color:var(--sky-soft);}
+.model-opt.picked{
+  border-color:var(--sky);background:#f2faff;
+  box-shadow:0 0 0 3px rgba(0,162,255,0.12);
+}
+.model-opt input{accent-color:var(--sky);width:16px;height:16px;flex-shrink:0;cursor:pointer;}
+.model-opt .mo-txt{display:flex;flex-direction:column;flex:1;min-width:0;}
+.model-opt .mo-txt strong{font-size:13.5px;font-weight:700;}
+.model-opt .mo-txt span{font-size:11px;color:var(--ink-soft);}
+.model-opt .mo-rank{
+  min-width:22px;height:22px;border-radius:999px;
+  display:none;align-items:center;justify-content:center;
+  font-size:11px;font-weight:800;color:#fff;
+  background:linear-gradient(120deg,var(--sky),var(--sky-soft));
+  flex-shrink:0;
+}
+.model-opt.picked .mo-rank{display:flex;}
+.model-hint{font-size:11.5px;color:var(--ink-soft);margin-top:8px;line-height:1.5;}
 .cta-text{
   width:100%;margin-top:10px;resize:vertical;min-height:56px;
   padding:12px 14px;border-radius:var(--radius-sm);
@@ -482,6 +526,16 @@ body{
       </div>
 
       <div class="field">
+        <label>Voice Model (Single or Multiple)</label>
+        <div class="seg" id="ttsModeSeg">
+          <button type="button" id="ttsModeSingleBtn" class="active" data-mode="single">Single</button>
+          <button type="button" id="ttsModeMultiBtn" data-mode="multi">Multiple</button>
+        </div>
+        <div class="model-list" id="modelList"></div>
+        <div class="model-hint" id="modelHint"></div>
+      </div>
+
+      <div class="field">
         <label>Detected Source Language</label>
         <span class="src-badge detecting" id="srcBadge">
           <svg class="spin-i" id="srcSpin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
@@ -624,6 +678,17 @@ const VOICES = [
 ];
 const DEFAULT_VOICE = "Kore";
 
+/* The four Gemini native-TTS models the backend can generate voice with
+   (mirrors TTS_MODEL_CATALOG in app.py). "hint" is just a short one-line
+   description shown under each option in the UI. */
+const TTS_MODEL_CATALOG = [
+  { id: "gemini-2.5-flash-preview-tts", label: "Gemini 2.5 Flash Preview TTS", hint: "An earlier preview text-to-speech option." },
+  { id: "gemini-3.1-flash-tts-preview", label: "Gemini 3.1 Flash TTS Preview", hint: "An expressive preview model supporting multiple languages." },
+  { id: "gemini-3.8-flash-tts",         label: "Gemini 3.8 Flash TTS",         hint: "A newer voice generation model focused on character voices and creative audio." },
+  { id: "gemini-3.8-flash-lite-tts",    label: "Gemini 3.8 Flash Lite TTS",    hint: "A lighter, faster variant of the 3.8 audio generation model." }
+];
+const DEFAULT_TTS_MODEL = TTS_MODEL_CATALOG[0].id;
+
 /* ============================================================
    Element refs
    ============================================================ */
@@ -642,6 +707,11 @@ const voiceSelect = $("voiceSelect");
 const ctaToggle = $("ctaToggle");
 const ctaText = $("ctaText");
 const generateBtn = $("generateBtn");
+
+const ttsModeSingleBtn = $("ttsModeSingleBtn");
+const ttsModeMultiBtn = $("ttsModeMultiBtn");
+const modelList = $("modelList");
+const modelHint = $("modelHint");
 
 const srcBadge = $("srcBadge");
 const srcText = $("srcText");
@@ -675,7 +745,9 @@ const state = {
   uploadXhr: null,
   abort: null,               // AbortController for the current SSE fetch
   targetLanguage: "English",
-  consoleCleared: false
+  consoleCleared: false,
+  ttsMode: "single",         // "single" | "multi"
+  ttsModels: [DEFAULT_TTS_MODEL]   // priority order: picked first = tried first
 };
 
 /* ============================================================
@@ -767,6 +839,79 @@ function buildMainVoiceSelect(){
   });
   voiceSelect.value = DEFAULT_VOICE;
 }
+
+/* ============================================================
+   TTS model selection (Single or Multiple)
+   ============================================================
+   Single: exactly one model is picked; every configured Gemini key races
+   on it first, and if it's totally down the backend still automatically
+   falls through to the other three models as a safety net.
+   Multiple: however many models are checked, tried in the order picked —
+   a problem with one switches to the next PICKED model immediately, then
+   falls through to any unpicked models as a final backup. */
+function renderModelList(){
+  modelList.innerHTML = "";
+  const isMulti = state.ttsMode === "multi";
+
+  TTS_MODEL_CATALOG.forEach(m=>{
+    const idx = state.ttsModels.indexOf(m.id);
+    const picked = idx !== -1;
+
+    const row = document.createElement("label");
+    row.className = "model-opt" + (picked ? " picked" : "");
+
+    const input = document.createElement("input");
+    input.type = isMulti ? "checkbox" : "radio";
+    if(!isMulti) input.name = "ttsModelSingle";
+    input.checked = picked;
+    input.addEventListener("change", ()=>onModelPick(m.id));
+
+    const rank = document.createElement("span");
+    rank.className = "mo-rank";
+    if(isMulti && picked) rank.textContent = String(idx + 1);
+
+    const txt = document.createElement("span");
+    txt.className = "mo-txt";
+    txt.innerHTML = `<strong>${esc(m.label)}</strong><span>${esc(m.hint)}</span>`;
+
+    row.appendChild(input);
+    row.appendChild(txt);
+    row.appendChild(rank);
+    modelList.appendChild(row);
+  });
+
+  modelHint.textContent = isMulti
+    ? "Checked models are tried in the order you picked them — a problem with one switches to the next immediately. Any unchecked models stay on as a final backup."
+    : "This model is tried first with every configured key at once. If it's completely unavailable, the other models are tried automatically as backup.";
+}
+
+function onModelPick(modelId){
+  if(state.ttsMode === "single"){
+    state.ttsModels = [modelId];
+  }else{
+    const i = state.ttsModels.indexOf(modelId);
+    if(i === -1) state.ttsModels.push(modelId);       // newly checked -> goes last in priority
+    else state.ttsModels.splice(i, 1);                 // unchecked -> removed from priority
+  }
+  renderModelList();
+}
+
+function setTtsMode(mode){
+  if(state.ttsMode === mode) return;
+  state.ttsMode = mode;
+  ttsModeSingleBtn.classList.toggle("active", mode === "single");
+  ttsModeMultiBtn.classList.toggle("active", mode === "multi");
+  if(mode === "single" && state.ttsModels.length > 1){
+    state.ttsModels = [state.ttsModels[0]];             // keep just the top priority pick
+  }
+  if(state.ttsModels.length === 0){
+    state.ttsModels = [DEFAULT_TTS_MODEL];
+  }
+  renderModelList();
+}
+
+ttsModeSingleBtn.addEventListener("click", ()=>setTtsMode("single"));
+ttsModeMultiBtn.addEventListener("click", ()=>setTtsMode("multi"));
 
 /* ============================================================
    File handling
@@ -1157,6 +1302,7 @@ async function startDub(){
   resultPanel.classList.remove("show");
   setProgress(0, "Starting dub…");
   pushLog(`[SYS] Dubbing into ${targetLang.value} · Voice: ${voiceSelect.value}`, "l-sys");
+  pushLog(`[SYS] Voice model (${state.ttsMode === "multi" ? "Multiple" : "Single"}): ${state.ttsModels.join(" -> ")}`, "l-sys");
   if(ctaValue) pushLog(`[SYS] Ending CTA enabled: "${ctaValue}"`, "l-sys");
 
   const fd = new FormData();
@@ -1164,6 +1310,8 @@ async function startDub(){
   fd.append("target_language", targetLang.value);
   fd.append("voice_name", voiceSelect.value);
   fd.append("ending_cta", ctaValue);
+  fd.append("tts_mode", state.ttsMode);
+  fd.append("tts_models", state.ttsModels.join(","));
 
   state.abort = new AbortController();
   try{
@@ -1214,6 +1362,7 @@ async function checkHealth(){
    Init
    ============================================================ */
 buildMainVoiceSelect();
+renderModelList();
 resetConsole();
 refreshGenerateState();
 checkHealth();
