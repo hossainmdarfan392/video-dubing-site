@@ -640,7 +640,12 @@ body{
 /* ============================================================
    Config
    ============================================================ */
-const API_BASE = "https://video-dubbing-api-85ur.onrender.com";
+// Backend Routing Restriction: every API request from this frontend must
+// go exclusively to this Render backend instance — never to any other
+// host. Every fetch/XHR call below builds its URL by prepending this
+// constant (e.g. `${BACKEND_URL}/upload`), so the frontend seamlessly and
+// exclusively communicates with the Render backend.
+const BACKEND_URL = "https://video-dubing-site.onrender.com";
 
 /* All 30 official Gemini native-TTS prebuilt voices, with Google's own
    one-word style tag for each (ai.google.dev/gemini-api/docs/speech-generation). */
@@ -925,7 +930,7 @@ function acceptFile(file){
   // uploaded-but-not-yet-dubbed) cleanly cancels/discards that old one.
   abortCurrentOperation();
   if(state.sessionId && !state.running){
-    fetch(`${API_BASE}/session/${encodeURIComponent(state.sessionId)}`, { method:"DELETE" }).catch(()=>{});
+    fetch(`${BACKEND_URL}/session/${encodeURIComponent(state.sessionId)}`, { method:"DELETE" }).catch(()=>{});
   }
   resetPipelineState();
 
@@ -945,7 +950,7 @@ function acceptFile(file){
 function clearFile(){
   abortCurrentOperation();
   if(state.sessionId && !state.running){
-    fetch(`${API_BASE}/session/${encodeURIComponent(state.sessionId)}`, { method:"DELETE" }).catch(()=>{});
+    fetch(`${BACKEND_URL}/session/${encodeURIComponent(state.sessionId)}`, { method:"DELETE" }).catch(()=>{});
   }
   resetPipelineState();
   state.file = null;
@@ -1208,7 +1213,7 @@ function presentResult(sessionId, meta){
   });
 
   resultPanel.classList.add("show");
-  const url = `${API_BASE}/download/${encodeURIComponent(sessionId)}`;
+  const url = `${BACKEND_URL}/download/${encodeURIComponent(sessionId)}`;
   resultVideo.src = url;
   resultVideo.load();
   downloadBtn.href = url;
@@ -1264,7 +1269,7 @@ function uploadAndPrepare(file){
   });
   xhr.addEventListener("abort", ()=>{ state.uploadXhr = null; });
 
-  xhr.open("POST", `${API_BASE}/upload`);
+  xhr.open("POST", `${BACKEND_URL}/upload`);
   xhr.send(fd);
 }
 
@@ -1273,7 +1278,7 @@ async function prepareSession(sessionId){
   refreshGenerateState();
   state.abort = new AbortController();
   try{
-    const res = await fetch(`${API_BASE}/prepare/${encodeURIComponent(sessionId)}`, {
+    const res = await fetch(`${BACKEND_URL}/prepare/${encodeURIComponent(sessionId)}`, {
       method: "GET", signal: state.abort.signal,
     });
     await readSSE(res, handlePrepareEvent);
@@ -1315,7 +1320,7 @@ async function startDub(){
 
   state.abort = new AbortController();
   try{
-    const res = await fetch(`${API_BASE}/dub`, { method:"POST", body:fd, signal:state.abort.signal });
+    const res = await fetch(`${BACKEND_URL}/dub`, { method:"POST", body:fd, signal:state.abort.signal });
     await readSSE(res, handleDubEvent);
     if(state.phase === "dubbing"){
       pushLog("[WARN] Stream closed unexpectedly before completion.", "l-warn");
@@ -1342,7 +1347,7 @@ ctaToggle.addEventListener("change", ()=>{
    ============================================================ */
 async function checkHealth(){
   try{
-    const res = await fetch(`${API_BASE}/health`, { method:"GET" });
+    const res = await fetch(`${BACKEND_URL}/health`, { method:"GET" });
     const j = await res.json();
     if(j.status === "ok"){
       const hasKeys = (j.gemini_keys_configured|0) > 0 && (j.groq_keys_configured|0) > 0;
