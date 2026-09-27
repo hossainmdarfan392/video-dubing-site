@@ -162,6 +162,7 @@ FFPROBE_BIN     (optional)   Default: "ffprobe"
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import os
 import re
@@ -392,6 +393,20 @@ TRANSLATE_CHUNK_SIZE = 12          # hard line-count ceiling even if a chunk
                                    # is still under-budget on characters
                                    # (keeps memory + JSON payloads bounded).
 TRANSLATE_CHUNK_RETRIES = 2
+
+# --- Hook handling (opening line(s) ONLY) ----------------------------------
+# The very first chunk of a transcript gets one extra, narrowly-scoped
+# power: judging whether the video's opening line(s) are a deliberate
+# attention-grabbing "hook" versus the video simply starting directly into
+# the scene/action. If a hook is present, it is REPLACED with a new,
+# high-energy action hook informed by the whole script. If no hook is
+# present, nothing is invented — the opening translates directly like any
+# other line. This is the ONLY place any creative rewriting is allowed;
+# every other segment always follows the strict in-place, no-restructuring
+# rule. HOOK_CONTEXT_CHAR_LIMIT caps how much of the full source script is
+# sent along as read-only context for that one judgment call, keeping the
+# prompt bounded even for a long video.
+HOOK_CONTEXT_CHAR_LIMIT = 6000
 SELF_HEAL_RETRIES = 2              # extra automatic retries (with backoff)
 SELF_HEAL_BACKOFF_SECONDS = 3.0
 
@@ -426,6 +441,20 @@ SOFT_SPEED_MAX = 1.3
 # matches the video without ever sounding rushed or dragged out.
 ATEMPO_LOCK_MIN = 1.15
 ATEMPO_LOCK_MAX = 1.30
+
+# --- Volume safety net: no perceived fade anywhere in the final track ------
+# Product requirement: the delivery style is instructed (see
+# _tts_style_hint) to stay high-energy front-to-back with no tapering, but
+# a prompt is never a hard guarantee — a chunk boundary or a naturally
+# trailing sentence can still leave part of the track a little quieter than
+# the rest, which is perceived as an unwanted "fade" (most noticeably right
+# at the end). FFmpeg's `dynaudnorm` (Dynamic Audio Normalizer) is applied
+# as a deterministic corrective pass on the FINAL fitted track — it
+# continuously evens out the loudness envelope across the whole file, so
+# any quiet stretch (start, middle, or end) is brought back up to match the
+# rest instead of standing out as a fade. This runs unconditionally, right
+# alongside the locked-band atempo pass, every single time.
+TTS_LOUDNESS_NORMALIZE_FILTER = "dynaudnorm=f=250:g=15:p=0.95:m=8"
 
 # --- RAM safety: sequential, chunk-by-chunk processing ----------------------
 # Render's free/starter instances have limited RAM. Nothing in this pipeline
@@ -489,6 +518,17 @@ class Session:
     prepared: bool = False   # True once extract+probe+transcribe has finished
     engine: str = ENGINE_MODE_DEFAULT   # "gemini" or "groq" — set at /upload time
     tts_models: List[str] = field(default_factory=lambda: list(TTS_MODELS))
+    # --- Background job tracking (see the job queue / worker section below) ---
+    # status flows: uploaded -> queued_prepare -> preparing -> prepared ->
+    # queued_dub -> dubbing -> done  (or -> error at any stage). This lets a
+    # client that went offline or refreshed the page check GET /status/{id}
+    # (or reattach to the SSE stream) and pick up exactly where things stand,
+    # because the actual work runs in a background worker independent of any
+    # one HTTP connection — see _job_worker / _process_job.
+    status: str = "uploaded"
+    job_percent: int = 0
+    job_message: str = ""
+    job_error: Optional[str] = None
 
 
 SESSIONS: Dict[str, Session] = {}
@@ -516,6 +556,10 @@ def save_session(sess: Session) -> None:
         "prepared": sess.prepared,
         "engine": sess.engine,
         "tts_models": sess.tts_models,
+        "status": sess.status,
+        "job_percent": sess.job_percent,
+        "job_message": sess.job_message,
+        "job_error": sess.job_error,
     }
     tmp = _session_file(sess.dir).with_suffix(".tmp")
     tmp.write_text(json.dumps(data), encoding="utf-8")
@@ -549,6 +593,10 @@ def load_session(session_id: str) -> Optional[Session]:
         prepared=data.get("prepared", False),
         engine=data.get("engine", ENGINE_MODE_DEFAULT),
         tts_models=data.get("tts_models") or list(TTS_MODELS),
+        status=data.get("status", "uploaded"),
+        job_percent=data.get("job_percent", 0),
+        job_message=data.get("job_message", ""),
+        job_error=data.get("job_error"),
     )
     SESSIONS[session_id] = sess
     return sess
@@ -596,6 +644,207 @@ def sse_error(message: str) -> Dict[str, str]:
 
 def sse_done(obj: dict) -> Dict[str, str]:
     return {"event": "done", "data": json.dumps(obj)}
+
+
+# --------------------------------------------------------------------------- #
+# Background job queue + per-session event bus
+# --------------------------------------------------------------------------- #
+# Processing (prepare/dub) runs in a SINGLE persistent background worker task,
+# completely decoupled from any one HTTP/SSE connection. This means:
+#   * Going offline, closing the app, or losing the connection NEVER stops a
+#     job that's already running or queued — the worker keeps going
+#     regardless, because the actual work is no longer tied to the request
+#     that started it.
+#   * Uploading several videos queues several jobs; the single worker
+#     processes them strictly ONE AT A TIME, in the order they arrived —
+#     never two heavy ffmpeg/TTS jobs running at once, which is exactly the
+#     RAM-safety rule the rest of this pipeline already follows internally,
+#     now extended across sessions too.
+#   * Refreshing the browser is harmless: reattaching to the SAME
+#     session_id (GET /prepare/{id}, POST /dub, or GET /status/{id}) first
+#     replays everything that already happened (from history), then keeps
+#     streaming whatever the worker produces next.
+#   * A finished session's result (and its /download/{id} link) is left
+#     alone until the person explicitly deletes it (DELETE /session/{id})
+#     or the 1h TTL sweep reclaims an abandoned one — so downloading later,
+#     after coming back online, always works.
+EVENT_HISTORY_LIMIT = 500  # per-session cap on buffered events for catch-up replay
+
+
+class _SessionEventBus:
+    """
+    Per-session pub/sub: every event a job produces is (1) appended to a
+    bounded history buffer so a NEW subscriber can instantly catch up on
+    everything that already happened, and (2) fanned out live to every
+    currently-attached subscriber queue. A subscriber disconnecting (browser
+    closed/refreshed) only removes it from the fan-out list — it never
+    affects the job itself, which isn't reading from here at all.
+    """
+
+    def __init__(self) -> None:
+        self._subscribers: Dict[str, List["asyncio.Queue[dict]"]] = {}
+        self._history: Dict[str, List[dict]] = {}
+
+    def history_for(self, session_id: str) -> List[dict]:
+        return list(self._history.get(session_id, []))
+
+    def subscribe(self, session_id: str) -> "asyncio.Queue[dict]":
+        q: "asyncio.Queue[dict]" = asyncio.Queue()
+        self._subscribers.setdefault(session_id, []).append(q)
+        return q
+
+    def unsubscribe(self, session_id: str, q: "asyncio.Queue[dict]") -> None:
+        subs = self._subscribers.get(session_id)
+        if subs and q in subs:
+            subs.remove(q)
+            if not subs:
+                self._subscribers.pop(session_id, None)
+
+    async def publish(self, session_id: str, event: dict) -> None:
+        hist = self._history.setdefault(session_id, [])
+        hist.append(event)
+        if len(hist) > EVENT_HISTORY_LIMIT:
+            del hist[: len(hist) - EVENT_HISTORY_LIMIT]
+        for q in list(self._subscribers.get(session_id, [])):
+            await q.put(event)
+
+
+SESSION_BUS = _SessionEventBus()
+
+# FIFO queue of (kind, session_id) pairs where kind is "prepare" or "dub".
+# A plain deque (not asyncio.Queue) so _queue_position can peek into it
+# without consuming — safe because asyncio is single-threaded/cooperative,
+# so there's no concurrent-access race on a single event loop.
+JOB_QUEUE: "collections.deque[Tuple[str, str]]" = collections.deque()
+_JOB_QUEUE_EVENT = asyncio.Event()
+_worker_task: Optional[asyncio.Task] = None
+
+
+def _queue_position(session_id: str) -> int:
+    """1-based position waiting in line; 0 if not currently queued (already running, done, or never queued)."""
+    for i, (_, sid) in enumerate(JOB_QUEUE):
+        if sid == session_id:
+            return i + 1
+    return 0
+
+
+def _ensure_worker_started() -> None:
+    """Lazily start the single background worker task on first use."""
+    global _worker_task
+    if _worker_task is None or _worker_task.done():
+        _worker_task = asyncio.get_event_loop().create_task(_job_worker())
+
+
+def _enqueue_job(kind: str, session_id: str) -> None:
+    JOB_QUEUE.append((kind, session_id))
+    _JOB_QUEUE_EVENT.set()
+    _ensure_worker_started()
+
+
+async def _apply_progress_to_session(sess: Session, ev: dict) -> None:
+    """Keep sess.job_percent/job_message in sync with progress events, and
+    persist them so GET /status/{id} (or a reattaching client) reflects
+    near-real-time state even across a server restart mid-job."""
+    if ev.get("event") == "progress":
+        try:
+            data = json.loads(ev["data"])
+            sess.job_percent = int(data.get("percent", sess.job_percent))
+            sess.job_message = str(data.get("message", sess.job_message))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+        if sess.dir.exists():
+            save_session(sess)
+
+
+async def _process_job(kind: str, session_id: str) -> None:
+    """Run exactly one queued job (prepare or dub) to completion, publishing
+    every event it produces to the session's event bus as it goes. Runs
+    entirely inside the background worker — nothing here depends on any
+    HTTP request being open."""
+    sess = load_session(session_id)
+    if sess is None or not sess.video_path or not sess.video_path.exists():
+        await SESSION_BUS.publish(session_id, sse_error(
+            "[ERROR] Session expired or its uploaded video is missing; cannot process."
+        ))
+        return
+
+    sess.status = "preparing" if kind == "prepare" else "dubbing"
+    save_session(sess)
+    await SESSION_BUS.publish(session_id, sse_log(
+        f"[INFO] Starting {kind} for session {session_id} (engine='{sess.engine}')..."
+    ))
+
+    gen = run_prepare(sess) if kind == "prepare" else run_dub(sess)
+    try:
+        async for ev in gen:
+            await _apply_progress_to_session(sess, ev)
+            await SESSION_BUS.publish(session_id, ev)
+    except Exception as exc:  # noqa: BLE001 — belt-and-braces; run_prepare/run_dub
+        # already catch and report their own errors internally. This only
+        # fires on a truly unexpected crash outside that handling.
+        await SESSION_BUS.publish(session_id, sse_error(
+            f"[ERROR] Unexpected worker failure: {type(exc).__name__}: {exc}"
+        ))
+        if sess.dir.exists():
+            sess.status = "error"
+            sess.job_error = str(exc)
+            save_session(sess)
+        return
+
+    if not sess.dir.exists():
+        # run_prepare/run_dub already hit a fatal error, reported it via its
+        # own sse_error event (already published above), and destroyed the
+        # session's scratch files — nothing further to finalize.
+        return
+
+    if kind == "prepare":
+        sess.status = "prepared" if sess.prepared else "error"
+    else:
+        sess.status = "done" if (sess.dir / "dubbed_output.mp4").exists() else "error"
+    save_session(sess)
+
+
+async def _job_worker() -> None:
+    """The single persistent background worker: pulls jobs off JOB_QUEUE
+    strictly one at a time, forever. Started lazily on first enqueue and
+    stays alive for the lifetime of the process."""
+    while True:
+        if not JOB_QUEUE:
+            _JOB_QUEUE_EVENT.clear()
+            await _JOB_QUEUE_EVENT.wait()
+            continue
+        kind, session_id = JOB_QUEUE.popleft()
+        try:
+            await _process_job(kind, session_id)
+        except Exception as exc:  # noqa: BLE001 — never let one bad job kill the worker loop
+            await SESSION_BUS.publish(session_id, sse_error(
+                f"[ERROR] Worker crashed processing this job: {type(exc).__name__}: {exc}"
+            ))
+
+
+async def _stream_session_events(session_id: str) -> AsyncGenerator[dict, None]:
+    """
+    Attach to a session's live event stream for an SSE endpoint: replay
+    everything already recorded in history (so a reconnecting/refreshed
+    client catches up instantly on a job that's already underway or even
+    already finished), then keep streaming new events as the background
+    worker produces them. Disconnecting here (browser closed/refreshed)
+    only unsubscribes this viewer — it never touches the job itself.
+    """
+    q = SESSION_BUS.subscribe(session_id)
+    try:
+        snapshot = SESSION_BUS.history_for(session_id)
+        for ev in snapshot:
+            yield ev
+            if ev.get("event") in ("done", "error"):
+                return  # job already reached a terminal state — nothing more will ever arrive
+        while True:
+            ev = await q.get()
+            yield ev
+            if ev.get("event") in ("done", "error"):
+                return
+    finally:
+        SESSION_BUS.unsubscribe(session_id, q)
 
 
 # --------------------------------------------------------------------------- #
@@ -695,8 +944,14 @@ def _speed_filter(ratio: float, use_rubberband: bool) -> str:
     but is intentionally ignored. The ratio itself is always constrained
     upstream to the locked ATEMPO_LOCK_MIN..ATEMPO_LOCK_MAX band before it
     ever reaches this function (see synthesize_single_track).
+
+    `dynaudnorm` (TTS_LOUDNESS_NORMALIZE_FILTER) is always chained on
+    afterward — this is the FFmpeg-side safety net that evens out any
+    quiet/fading stretch (most commonly right at the end of the track)
+    regardless of how well the TTS model followed the "stay high-energy,
+    no fading" delivery instruction.
     """
-    return _atempo_chain(ratio)
+    return f"{_atempo_chain(ratio)},{TTS_LOUDNESS_NORMALIZE_FILTER}"
 
 
 async def _encode_wav(cmd_in: List[str], out_audio: Path,
@@ -907,6 +1162,49 @@ def _translation_style_notes(target_language: str) -> str:
     )
 
 
+def _hook_handling_section(target_language: str, full_script_context: str) -> str:
+    """
+    Prompt text injected ONLY for the first chunk of a transcript. This is
+    the single, narrowly-scoped exception to the "translate every segment
+    in place, never restructure" rule: the opening line(s) may be REPLACED
+    with a new hook if (and only if) the source actually has one; every
+    other segment (including the rest of this same first chunk) still
+    follows the normal in-place, no-restructuring rule from TASK 1/NO
+    RESTRUCTURING above.
+    """
+    if not full_script_context:
+        return ""
+    context = full_script_context[:HOOK_CONTEXT_CHAR_LIMIT]
+    if len(full_script_context) > HOOK_CONTEXT_CHAR_LIMIT:
+        context += " …[script truncated for length]"
+    return (
+        "HOOK HANDLING (applies ONLY to the very first segment(s) of the "
+        "ENTIRE video — this chunk's opening line(s), however many there "
+        "are; every segment after them still follows TASK 1 / NO "
+        "RESTRUCTURING above exactly as written):\n"
+        "First, using the FULL SOURCE SCRIPT given below purely as "
+        "read-only context, decide whether those opening line(s) are a "
+        "deliberate attention-grabbing HOOK (a teaser line, a bold claim, a "
+        "provocative question meant to hook the viewer BEFORE the actual "
+        "scene/action starts) — as opposed to the video simply starting "
+        "directly into the scene/action with no separate attention-grab.\n"
+        "- If the opening IS a hook (whether it is 1, 2, or more lines): "
+        "discard its literal wording entirely and write a NEW, punchy, "
+        f"high-energy ACTION HOOK in {target_language}, informed by the "
+        "whole script's content below, that grabs attention immediately. "
+        "Distribute this new hook naturally across the SAME opening "
+        "segment(s) the source hook used — never add or remove segments to "
+        "do this.\n"
+        "- If the opening is NOT a hook (the video starts directly into "
+        "the scene/action): do NOT invent one. Translate those opening "
+        "line(s) directly and naturally, exactly like every other "
+        "segment — no embellishment.\n\n"
+        "FULL SOURCE SCRIPT (read-only context ONLY, to judge/write the "
+        "hook — this is not itself part of the segments to translate):\n"
+        f"{context}\n\n"
+    )
+
+
 async def gemini_transcribe(audio_path: Path) -> dict:
     """
     Gemini equivalent of groq_transcribe(): sends the extracted audio
@@ -987,8 +1285,20 @@ async def _gemini_translate_chunk(
     chunk_segments: List[Dict[str, object]],
     source_language: str,
     target_language: str,
+    is_first_chunk: bool = False,
+    full_script_context: str = "",
 ) -> Tuple[Optional[str], List[Dict[str, object]]]:
-    """Gemini equivalent of _groq_translate_chunk() — same contract."""
+    """
+    Gemini equivalent of _groq_translate_chunk() — same contract. When
+    `is_first_chunk` is True, `full_script_context` (the full source-language
+    transcript, for read-only context) unlocks the narrowly-scoped hook
+    exception in _hook_handling_section — every other call keeps the strict
+    in-place, no-restructuring translation rule with no exceptions.
+    """
+    hook_section = (
+        _hook_handling_section(target_language, full_script_context)
+        if is_first_chunk else ""
+    )
     system_prompt = (
         "You are an elite professional translator inside an automated "
         "single-narrator video-dubbing pipeline. You will be given a JSON "
@@ -1010,13 +1320,14 @@ async def _gemini_translate_chunk(
         "never split one segment's content across two, never reorder "
         "segments, and never move a phrase from one line into another to "
         "make the pacing 'flow' better — that breaks the sync between the "
-        "dubbed voice and the original video. Do not creatively rewrite or "
-        "sharpen an opening line for impact. If a segment's direct, natural "
-        "translation is already correct, leave it exactly as that plain "
-        "translation — do not embellish it. Only retouch a segment when its "
-        "own translation is actually inaccurate, unnatural, or grammatically "
-        "wrong, and any such fix must stay entirely inside that same "
-        "segment.\n\n"
+        "dubbed voice and the original video. If a segment's direct, "
+        "natural translation is already correct, leave it exactly as that "
+        "plain translation — do not embellish it. Only retouch a segment "
+        "when its own translation is actually inaccurate, unnatural, or "
+        "grammatically wrong, and any such fix must stay entirely inside "
+        "that same segment. (The ONLY exception to any of this is the "
+        "opening hook rule below, if it applies to this chunk.)\n\n"
+        f"{hook_section}"
         "TASK 2 — COMPLETENESS (CRITICAL): the output 'segments' array MUST "
         "have EXACTLY the same number of objects as the input, same order, "
         "same start/end timestamps. Never skip, merge, drop, or duplicate.\n\n"
@@ -1097,12 +1408,19 @@ async def gemini_translate_all(
 
     chunks = _chunk_by_char_budget(transcript_segments)
 
+    # Read-only, source-language context for the ONE-TIME hook judgment call
+    # on the first chunk only (see _hook_handling_section). Never sent for
+    # any other chunk.
+    full_script_context = "\n".join(
+        str(seg.get("text", "")).strip() for seg in transcript_segments if seg.get("text")
+    )
+
     detected_source_language: Optional[str] = None
     all_segments: List[Dict[str, object]] = []
     fallback_count = 0
     fallback_ranges: List[str] = []
 
-    for chunk in chunks:
+    for chunk_idx, chunk in enumerate(chunks):
         payload_chunk = [
             {
                 "start": float(seg.get("start", 0.0)),
@@ -1116,6 +1434,8 @@ async def gemini_translate_all(
             try:
                 lang, translated = await _gemini_translate_chunk(
                     payload_chunk, source_language, target_language,
+                    is_first_chunk=(chunk_idx == 0),
+                    full_script_context=full_script_context if chunk_idx == 0 else "",
                 )
             except Exception:  # noqa: BLE001
                 continue
@@ -1152,6 +1472,8 @@ async def _groq_translate_chunk(
     chunk_segments: List[Dict[str, object]],
     source_language: str,
     target_language: str,
+    is_first_chunk: bool = False,
+    full_script_context: str = "",
 ) -> Tuple[Optional[str], List[Dict[str, object]]]:
     """
     Translate ONE small chunk (<= TRANSLATE_CHUNK_SIZE lines) and return
@@ -1159,8 +1481,14 @@ async def _groq_translate_chunk(
     EMPTY list (never raises) if this chunk's output doesn't come back as a
     strict 1:1 match after internal parsing — the caller (groq_translate_all)
     is responsible for retrying / falling back so no line is ever silently
-    lost.
+    lost. When `is_first_chunk` is True, `full_script_context` unlocks the
+    narrowly-scoped hook exception in _hook_handling_section — every other
+    call keeps the strict in-place, no-restructuring rule with no exceptions.
     """
+    hook_section = (
+        _hook_handling_section(target_language, full_script_context)
+        if is_first_chunk else ""
+    )
     system_prompt = (
         "You are an elite professional translator inside an automated "
         "single-narrator video-dubbing pipeline. You will be given a JSON "
@@ -1186,14 +1514,15 @@ async def _groq_translate_chunk(
         "restructured for 'better flow'), never reorder segments, and never "
         "move a phrase from one line into another. That kind of "
         "restructuring is exactly what breaks the sync between the dubbed "
-        "voice and the original video, so it is never allowed. Do not "
-        "creatively rewrite or sharpen an opening line for impact. If a "
+        "voice and the original video, so it is never allowed. If a "
         "segment's direct, natural translation is already correct, leave it "
         "exactly as that plain translation — do not embellish it. Only "
         "retouch a segment when its own translation is actually inaccurate, "
         "unnatural, or grammatically wrong, and any such fix must stay "
         "entirely inside that same segment, without lengthening or "
-        "shortening its scope.\n\n"
+        "shortening its scope. (The ONLY exception to any of this is the "
+        "opening hook rule below, if it applies to this chunk.)\n\n"
+        f"{hook_section}"
         "TASK 2 — COMPLETENESS (CRITICAL): The number of objects in the "
         "output 'segments' array MUST exactly equal the number of input "
         "segments in THIS chunk — a strict 1:1 mapping, same order. NEVER "
@@ -1289,6 +1618,92 @@ async def _groq_translate_chunk(
     if len(out_segments) != len(chunk_segments):
         return (str(detected_lang) if detected_lang else None), []
     return (str(detected_lang) if detected_lang else None), out_segments
+
+
+async def groq_translate_all(
+    transcript_segments: List[Dict[str, object]],
+    source_language: str,
+    target_language: str,
+) -> dict:
+    """
+    Translate the WHOLE transcript in small chunks (TRANSLATE_CHUNK_SIZE
+    lines at a time) so a single LLM hiccup can only ever affect a few
+    lines. Every chunk is retried up to TRANSLATE_CHUNK_RETRIES times if it
+    doesn't come back as a strict 1:1 match; if it still fails after every
+    retry, that chunk falls back to the LITERAL SOURCE-LANGUAGE TEXT for
+    just those lines (never silently dropped) and the caller is told
+    exactly which ones via `fallback_count`. Guarantees
+    len(output_segments) == len(transcript_segments) ALWAYS.
+    """
+    if not transcript_segments:
+        raise RuntimeError("Nothing to translate — the transcript is empty.")
+
+    chunks: List[List[Dict[str, object]]] = _chunk_by_char_budget(transcript_segments)
+
+    # Read-only, source-language context for the ONE-TIME hook judgment call
+    # on the first chunk only (see _hook_handling_section). Never sent for
+    # any other chunk.
+    full_script_context = "\n".join(
+        str(seg.get("text", "")).strip() for seg in transcript_segments if seg.get("text")
+    )
+
+    detected_source_language: Optional[str] = None
+    all_segments: List[Dict[str, object]] = []
+    fallback_count = 0
+    fallback_ranges: List[str] = []
+
+    for chunk_idx, chunk in enumerate(chunks):
+        payload_chunk = [
+            {
+                "start": float(seg.get("start", 0.0)),
+                "end": float(seg.get("end", 0.0)),
+                "text": seg.get("text", ""),
+            }
+            for seg in chunk
+        ]
+
+        result_segments: List[Dict[str, object]] = []
+        last_err: Optional[Exception] = None
+        for attempt in range(1 + TRANSLATE_CHUNK_RETRIES):
+            try:
+                lang, translated = await _groq_translate_chunk(
+                    payload_chunk, source_language, target_language,
+                    is_first_chunk=(chunk_idx == 0),
+                    full_script_context=full_script_context if chunk_idx == 0 else "",
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                continue
+            if lang and detected_source_language is None:
+                detected_source_language = lang
+            if len(translated) == len(chunk):
+                result_segments = translated
+                break
+
+        if not result_segments:
+            # Every retry failed to come back 1:1 — NEVER drop these lines:
+            # fall back to the original source-language text so they still
+            # get voiced, and note exactly which range fell back.
+            fallback_count += len(chunk)
+            fallback_ranges.append(
+                f"{payload_chunk[0]['start']:.1f}s-{payload_chunk[-1]['end']:.1f}s"
+            )
+            result_segments = [
+                {"start": float(seg.get("start", 0.0)), "end": float(seg.get("end", 0.0)),
+                 "text": str(seg.get("text", "")).strip() or "..."}
+                for seg in chunk
+            ]
+
+        all_segments.extend(result_segments)
+
+    return {
+        "source_language": detected_source_language or source_language,
+        "segments": all_segments,
+        "input_count": len(transcript_segments),
+        "output_count": len(all_segments),
+        "fallback_count": fallback_count,
+        "fallback_ranges": fallback_ranges,
+    }
 
 
 def _chunk_by_char_budget(
@@ -1659,19 +2074,30 @@ def _tts_style_hint(target_language: str) -> str:
     Bangladeshi user naturally wants natural Bangladesh (Dhaka-standard)
     Bengali instead — a different accent, not just a different language.
 
-    Product requirement: the delivery is HIGH-CONFIDENCE and ENERGETIC —
-    assured, upbeat, engaging — but explicitly NOT dramatic/theatrical (no
-    exaggerated gasps, no movie-trailer-style suspense, no overacted
-    emotional swings). Natural pacing and brief natural pauses between
-    sentences are kept so it still sounds like a real person, not a
-    hyped-up announcer.
+    Product requirement (MANDATORY, not a suggestion): the delivery is
+    HIGH-CONFIDENCE and ENERGETIC — assured, upbeat, engaging — from the
+    very first word to the very last, with explicitly NO dramatic/
+    theatrical performance (no exaggerated gasps, no thriller-style
+    suspense, no movie-trailer pacing, no overacted emotional swings) and
+    NO tapering/fading of energy or volume anywhere in the narration,
+    especially not near the end. This exact instruction is re-sent with
+    EVERY chunk (see gemini_tts_with_fallback), so the same energy level is
+    reinforced at the start of every chunk, not just the first — and the
+    FFmpeg `dynaudnorm` pass in `_speed_filter` acts as a deterministic
+    safety net afterward for anything the model doesn't fully honor.
     """
     base = (
-        "Speak with high confidence and energetic delivery — assured, "
-        "upbeat, and engaging — but keep it natural and grounded, NOT "
-        "dramatic or theatrical: no exaggerated emotion, no movie-trailer "
-        "suspense, no overacting. Clear articulation, natural pacing, and "
-        "brief natural pauses between sentences"
+        "MANDATORY delivery style — follow exactly, do not deviate: speak "
+        "with high confidence and energetic delivery — assured, upbeat, and "
+        "engaging — and hold that SAME energy and volume level from your "
+        "very first word all the way to your very last word. Do not soften, "
+        "taper, slow down, or fade the energy or volume near the end under "
+        "any circumstance. Absolutely NO dramatic or theatrical performance: "
+        "no thriller-style suspense, no movie-trailer build-up, no "
+        "exaggerated emotion, no overacting. Keep it natural and grounded — "
+        "clear articulation, natural pacing, brief natural pauses between "
+        "sentences — but consistently confident and energetic throughout, "
+        "not a hyped-up announcer and not a fading narrator"
     )
     lang = (target_language or "").strip().lower()
     if "bengali" in lang or "bangla" in lang:
@@ -1773,10 +2199,14 @@ async def synthesize_single_track(sess: Session) -> AsyncGenerator[dict, None]:
     # always lands inside a range that matches the source video's timing
     # without ever sounding sped up or dragged out beyond that locked band.
     fitted_path = seg_dir / "fitted.wav"
-    applied_speed_ratio = max(ATEMPO_LOCK_MIN, min(ATEMPO_LOCK_MAX, raw_ratio))
+    # Rounded to 2 decimals so the applied ratio is a clean, precise value
+    # that varies naturally with the actual gap for this video (e.g. 1.19x,
+    # 1.23x, 1.27x) rather than always landing on a raw multi-decimal
+    # number — while still never leaving the locked 1.15x-1.30x band.
+    applied_speed_ratio = round(max(ATEMPO_LOCK_MIN, min(ATEMPO_LOCK_MAX, raw_ratio)), 2)
     yield sse_log(
         f"[INFO] Natural fit would need {raw_ratio:.3f}x — locking applied "
-        f"speed to {applied_speed_ratio:.3f}x (product rule: always between "
+        f"speed to {applied_speed_ratio:.2f}x (product rule: always between "
         f"{ATEMPO_LOCK_MIN:.2f}x-{ATEMPO_LOCK_MAX:.2f}x, pitch preserved via atempo)."
     )
     if raw_ratio < ATEMPO_LOCK_MIN:
