@@ -183,18 +183,19 @@ body{
 .control{
   position:relative;
 }
-.control select,.control input[type="text"]{
+.control select,.control input[type="text"],.control input[type="email"]{
   width:100%;appearance:none;-webkit-appearance:none;
   padding:12px 40px 12px 14px;border-radius:var(--radius-sm);
   border:1px solid var(--line);background:#fbfdff;
   font-size:14.5px;font-family:inherit;color:var(--ink);font-weight:550;
   transition:border-color .2s ease,box-shadow .2s ease,background .2s ease;
 }
-.control select:focus,.control input[type="text"]:focus{
+.control select:focus,.control input[type="text"]:focus,.control input[type="email"]:focus{
   outline:none;border-color:var(--sky);background:#fff;
   box-shadow:0 0 0 4px rgba(0,162,255,0.14);
 }
 .control .chev{position:absolute;right:13px;top:50%;transform:translateY(-50%);color:var(--ink-soft);pointer-events:none;}
+.field-note{margin-top:6px;font-size:11.5px;color:#98a7bd;}
 
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
 @media (max-width:480px){.row2{grid-template-columns:1fr;}}
@@ -263,6 +264,8 @@ body{
 .progress-fill.paused{background:linear-gradient(90deg,#7c6bff,var(--sky));}
 
 .progress-marks{display:flex;justify-content:space-between;margin-top:8px;font-size:10.5px;color:#9fb0c4;font-weight:600;}
+.queue-note{margin-top:8px;font-size:11.5px;color:var(--ink-soft);font-weight:600;display:none;}
+.queue-note.show{display:block;}
 
 /* Console */
 .console{
@@ -320,7 +323,7 @@ body{
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;}
 
 /* ============================================================
-   Engine toggle + TTS model multi-select (new)
+   Engine toggle + TTS model multi-select
    ============================================================ */
 .engine-toggle{
   display:flex;align-items:center;justify-content:space-between;gap:12px;
@@ -351,6 +354,31 @@ body{
 .tts-mode-row{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
 .tts-mode-row label{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);font-weight:600;cursor:pointer;}
 .tts-mode-row input{accent-color:var(--sky);}
+
+/* ============================================================
+   Past Dubs (localStorage history)
+   ============================================================ */
+.history-card{margin-top:24px;}
+.history-list{display:flex;flex-direction:column;gap:8px;}
+.history-empty{color:#98a7bd;font-size:13px;font-style:italic;padding:6px 2px;}
+.history-row{
+  display:flex;align-items:center;gap:12px;padding:11px 13px;border-radius:var(--radius-sm);
+  border:1px solid var(--line);background:#fbfdff;
+}
+.history-row .hr-main{min-width:0;flex:1;}
+.history-row .hr-title{font-size:13.5px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.history-row .hr-sub{font-size:11.5px;color:var(--ink-soft);margin-top:2px;}
+.history-row a.hr-dl{
+  flex-shrink:0;display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;
+  color:var(--sky-deep);text-decoration:none;padding:7px 11px;border-radius:999px;
+  background:#f2f9ff;border:1px solid #d8ecff;
+}
+.history-row a.hr-dl:hover{background:#e3f3ff;}
+.history-row .hr-del{
+  flex-shrink:0;background:none;border:none;cursor:pointer;color:var(--ink-soft);padding:6px;border-radius:8px;
+}
+.history-row .hr-del:hover{background:#fdeaea;color:var(--err);}
+.history-clear{margin-top:10px;background:none;border:none;color:var(--ink-soft);font-size:12px;cursor:pointer;text-decoration:underline;padding:0;}
 </style>
 </head>
 <body>
@@ -378,7 +406,7 @@ body{
   <!-- ===================== HERO ===================== -->
   <section class="hero">
     <h1>Dub any video into <span class="grad">any language</span>, flawlessly.</h1>
-    <p>Pick a video — upload &amp; transcription start instantly. Choose a language and voice, then press Generate Dub to translate, re-voice, and match the audio to your video's exact length.</p>
+    <p>Pick a video — upload &amp; transcription start instantly in the background. Choose a language and voice, then press Generate Dub. You can close this tab; if you leave an email we'll notify you when it's ready, and finished dubs are saved here for later.</p>
   </section>
 
   <!-- ===================== MAIN GRID ===================== -->
@@ -500,6 +528,14 @@ body{
         <div class="tts-models" id="ttsModelList"></div>
       </div>
 
+      <div class="field">
+        <label for="notifyEmail">Email me when it's ready (optional)</label>
+        <div class="control">
+          <input type="email" id="notifyEmail" placeholder="you@example.com" autocomplete="email" />
+        </div>
+        <div class="field-note">We'll only use this to send the download link once your dub finishes.</div>
+      </div>
+
       <button class="btn" id="generateBtn" disabled>
         <span class="btn-ico" aria-hidden="true">
           <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
@@ -507,6 +543,18 @@ body{
         <span class="btn-label">Generate Dub</span>
         <span class="btn-spin" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg></span>
       </button>
+
+      <!-- Past Dubs (browser localStorage — no server RAM used) -->
+      <div class="history-card">
+        <div class="card-title" style="margin-bottom:10px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></svg>
+          Past Dubs (saved on this device)
+        </div>
+        <div class="history-list" id="historyList">
+          <div class="history-empty">No completed dubs saved on this device yet.</div>
+        </div>
+        <button class="history-clear" id="historyClear" style="display:none;">Clear all history</button>
+      </div>
     </section>
 
     <!-- RIGHT: Dashboard -->
@@ -534,20 +582,21 @@ body{
           <div class="progress-marks">
             <span>Upload</span><span>Transcribe</span><span>Voice</span><span>Mux</span><span>Done</span>
           </div>
+          <div class="queue-note" id="queueNote"></div>
         </div>
 
         <!-- Console -->
         <div class="console">
           <div class="console-bar">
             <div class="dotset" aria-hidden="true"><i></i><i></i><i></i></div>
-            <div class="console-title">pipeline://stream — SSE</div>
+            <div class="console-title">pipeline://status — polling</div>
             <div class="console-live">
               <span class="live-dot" id="liveDot"></span>
-              <span id="liveText">offline</span>
+              <span id="liveText">idle</span>
             </div>
           </div>
           <div class="console-body" id="console">
-            <div class="console-empty">// Log stream is idle. Start a dub to see live server events.</div>
+            <div class="console-empty">// Log is idle. Start a dub to see live server updates (polled every few seconds).</div>
           </div>
         </div>
       </div>
@@ -570,7 +619,7 @@ body{
   </div>
 
   <div class="footer">
-    Aurora Dub · Neural dubbing pipeline · Streaming over Server-Sent Events
+    Aurora Dub · Background job queue · Progress polled every few seconds (no long-lived connections)
   </div>
 </div>
 
@@ -581,6 +630,9 @@ body{
    Config
    ============================================================ */
 const API_BASE = "https://video-dubing-site.onrender.com";
+const POLL_INTERVAL_MS = 4000;      // poll GET /status every ~4s
+const HISTORY_KEY = "auroraDubHistory";
+const HISTORY_MAX = 25;
 
 /* All 30 official Gemini native-TTS prebuilt voices, with Google's own
    one-word style tag for each (ai.google.dev/gemini-api/docs/speech-generation). */
@@ -642,6 +694,7 @@ const fileClear = $("fileClear");
 
 const targetLang = $("targetLang");
 const voiceSelect = $("voiceSelect");
+const notifyEmail = $("notifyEmail");
 const generateBtn = $("generateBtn");
 
 const srcBadge = $("srcBadge");
@@ -651,6 +704,7 @@ const srcSpin = $("srcSpin");
 const stageText = $("stageText");
 const pctText = $("pctText");
 const progressFill = $("progressFill");
+const queueNote = $("queueNote");
 const consoleEl = $("console");
 const liveDot = $("liveDot");
 const liveText = $("liveText");
@@ -670,21 +724,25 @@ const ttsModeSingle = $("ttsModeSingle");
 const ttsModeMulti = $("ttsModeMulti");
 const ttsModelList = $("ttsModelList");
 
+const historyList = $("historyList");
+const historyClearBtn = $("historyClear");
+
 /* ============================================================
    App state
    ============================================================ */
 const state = {
   file: null,
-  running: false,           // true only while /prepare or /dub is streaming
-  phase: "idle",             // idle | uploading | preparing | ready | dubbing | done
+  running: false,             // true while a prepare/dub job is queued or in progress (polling active)
+  phase: "idle",               // idle | uploading | preparing | ready | dubbing | done
   sessionId: null,
   prepared: false,
   uploadXhr: null,
-  abort: null,               // AbortController for the current SSE fetch
+  pollTimer: null,
+  lastLogCount: 0,             // last log_count seen from /status, for incremental polling
   targetLanguage: "English",
   consoleCleared: false,
-  engine: "gemini",          // "gemini" | "groq" — transcription+translation
-  ttsMode: "single",         // "single" | "multi"
+  engine: "gemini",            // "gemini" | "groq" — transcription+translation
+  ttsMode: "single",           // "single" | "multi"
   ttsModels: [DEFAULT_TTS_MODEL]
 };
 
@@ -729,13 +787,13 @@ function pushLog(msg, forceClass){
 }
 
 function resetConsole(){
-  consoleEl.innerHTML = '<div class="console-empty">// Log stream is idle. Start a dub to see live server events.</div>';
+  consoleEl.innerHTML = '<div class="console-empty">// Log is idle. Start a dub to see live server updates (polled every few seconds).</div>';
   state.consoleCleared = false;
 }
 
 function setLive(on){
   liveDot.classList.toggle("on", !!on);
-  liveText.textContent = on ? "streaming" : "offline";
+  liveText.textContent = on ? "polling" : "idle";
 }
 
 function setProgress(percent, message){
@@ -746,6 +804,16 @@ function setProgress(percent, message){
 }
 
 function setStage(txt){ stageText.textContent = txt; }
+
+function setQueueNote(pos){
+  if(pos && pos > 0){
+    queueNote.textContent = `Queued — position ${pos} in line (another job is processing first).`;
+    queueNote.classList.add("show");
+  }else{
+    queueNote.classList.remove("show");
+    queueNote.textContent = "";
+  }
+}
 
 /* ============================================================
    Engine toggle (Gemini <-> Groq)
@@ -782,7 +850,6 @@ function onTtsModelPick(){
   const inputs = Array.from(ttsModelList.querySelectorAll("input"));
   state.ttsModels = inputs.filter(i=>i.checked).map(i=>i.value);
   if(state.ttsModels.length === 0){
-    // Never allow zero models selected — fall back to the first one.
     inputs[0].checked = true;
     state.ttsModels = [inputs[0].value];
   }
@@ -832,6 +899,78 @@ function buildMainVoiceSelect(){
 }
 
 /* ============================================================
+   localStorage history (completed dubs) — requirement 4
+   Kept entirely client-side so past jobs never take up server RAM.
+   ============================================================ */
+function loadHistory(){
+  try{
+    const raw = localStorage.getItem(HISTORY_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  }catch(_){ return []; }
+}
+function saveHistory(arr){
+  try{ localStorage.setItem(HISTORY_KEY, JSON.stringify(arr.slice(0, HISTORY_MAX))); }
+  catch(_){ /* storage full/unavailable — non-fatal, history just won't persist */ }
+}
+function addHistoryEntry(entry){
+  const arr = loadHistory();
+  arr.unshift(entry); // newest first
+  saveHistory(arr);
+  renderHistory();
+}
+function removeHistoryEntry(sessionId){
+  const arr = loadHistory().filter(e => e.session_id !== sessionId);
+  saveHistory(arr);
+  renderHistory();
+}
+function clearHistory(){
+  try{ localStorage.removeItem(HISTORY_KEY); }catch(_){}
+  renderHistory();
+}
+function fmtWhen(ts){
+  try{
+    const d = new Date(ts);
+    return d.toLocaleString([], { month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" });
+  }catch(_){ return ""; }
+}
+function renderHistory(){
+  const arr = loadHistory();
+  if(arr.length === 0){
+    historyList.innerHTML = '<div class="history-empty">No completed dubs saved on this device yet.</div>';
+    historyClearBtn.style.display = "none";
+    return;
+  }
+  historyClearBtn.style.display = "";
+  historyList.innerHTML = "";
+  arr.forEach(entry=>{
+    const row = document.createElement("div");
+    row.className = "history-row";
+    const fullUrl = entry.download_url && entry.download_url.startsWith("http")
+      ? entry.download_url
+      : `${API_BASE}${entry.download_url || ("/download/" + entry.session_id)}`;
+    row.innerHTML = `
+      <div class="hr-main">
+        <div class="hr-title">${esc(entry.target_language || "Dub")} · ${esc(entry.voice || "")}</div>
+        <div class="hr-sub">${esc(fmtWhen(entry.completed_at))} · ${esc(entry.session_id)}</div>
+      </div>
+      <a class="hr-dl" href="${fullUrl}" target="_blank" rel="noopener">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download
+      </a>
+      <button class="hr-del" title="Remove from history" aria-label="Remove from history" data-sid="${esc(entry.session_id)}">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    `;
+    historyList.appendChild(row);
+  });
+  historyList.querySelectorAll(".hr-del").forEach(btn=>{
+    btn.addEventListener("click", ()=> removeHistoryEntry(btn.getAttribute("data-sid")));
+  });
+}
+historyClearBtn.addEventListener("click", clearHistory);
+
+/* ============================================================
    File handling
    ============================================================ */
 function acceptFile(file){
@@ -856,9 +995,11 @@ function acceptFile(file){
   resetConsole();
 
   // Upload starts the instant a video is picked (gallery, file browser, or
-  // drag-and-drop) — no extra tap needed. The actual DUBBING only starts
-  // when the person presses the Generate Dub button (see startDub()).
-  uploadAndPrepare(file);
+  // drag-and-drop) — no extra tap needed. /upload queues the background
+  // "prepare" job itself and returns immediately; we then poll /status.
+  // The actual DUBBING only starts when the person presses Generate Dub
+  // (see startDub()).
+  uploadAndQueuePrepare(file);
 }
 function clearFile(){
   abortCurrentOperation();
@@ -878,12 +1019,14 @@ function resetPipelineState(){
   state.sessionId = null;
   state.prepared = false;
   state.phase = "idle";
+  state.lastLogCount = 0;
   setProgress(0, "");
+  setQueueNote(0);
   resetSourceLanguage();
 }
 function abortCurrentOperation(){
   if(state.uploadXhr){ try{ state.uploadXhr.abort(); }catch(_){} state.uploadXhr = null; }
-  if(state.abort){ try{ state.abort.abort(); }catch(_){} state.abort = null; }
+  stopPolling();
   state.running = false;
   setLive(false);
 }
@@ -920,62 +1063,6 @@ window.addEventListener("dragover",(e)=> e.preventDefault());
 window.addEventListener("drop",(e)=> e.preventDefault());
 
 /* ============================================================
-   SSE-over-fetch reader
-   Parses text/event-stream framing from a POST response body.
-   ============================================================ */
-async function readSSE(response, onEvent){
-  if(!response.ok){
-    let detail = "";
-    try{ const j = await response.json(); detail = j.detail || JSON.stringify(j); }
-    catch(_){ try{ detail = await response.text(); }catch(__){} }
-    throw new Error(`HTTP ${response.status}${detail ? " — " + detail : ""}`);
-  }
-  if(!response.body) throw new Error("Streaming not supported by this browser.");
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
-
-  while(true){
-    const { value, done } = await reader.read();
-    if(done) break;
-    buffer += decoder.decode(value, { stream:true });
-
-    // Split complete events on blank line (handle \n\n and \r\n\r\n)
-    let sep;
-    while((sep = buffer.search(/\r?\n\r?\n/)) !== -1){
-      const rawEvent = buffer.slice(0, sep);
-      buffer = buffer.slice(sep + (buffer[sep] === "\r" ? 4 : 2));
-      const parsed = parseEventBlock(rawEvent);
-      if(parsed) onEvent(parsed.event, parsed.data);
-    }
-  }
-  // Flush any trailing event without a terminating blank line
-  const tail = buffer.trim();
-  if(tail){
-    const parsed = parseEventBlock(tail);
-    if(parsed) onEvent(parsed.event, parsed.data);
-  }
-}
-
-function parseEventBlock(block){
-  const lines = block.split(/\r?\n/);
-  let event = "message";
-  const dataLines = [];
-  for(const line of lines){
-    if(!line || line.startsWith(":")) continue;      // comment / keep-alive
-    if(line.startsWith("event:")) event = line.slice(6).trim();
-    else if(line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /,""));
-  }
-  if(dataLines.length === 0 && event === "message") return null;
-  return { event, data: dataLines.join("\n") };
-}
-
-function safeJSON(str){
-  try{ return JSON.parse(str); }catch(_){ return null; }
-}
-
-/* ============================================================
    Run lifecycle
    ============================================================ */
 function beginRun(phase){
@@ -993,6 +1080,7 @@ function endRun(nextPhase){
   generateBtn.classList.remove("loading");
   progressFill.classList.remove("active");
   setLive(false);
+  setQueueNote(0);
   refreshGenerateState();
 }
 /* keepSession=true -> the video/transcript are still valid (only
@@ -1000,7 +1088,7 @@ function endRun(nextPhase){
    person just press Generate Dub again without re-uploading. */
 function failRun(reason, keepSession){
   pushLog("[WARN] " + (reason || "Run stopped.") + " State reset.", "l-warn");
-  if(state.abort){ try{ state.abort.abort(); }catch(_){} }
+  stopPolling();
   if(state.uploadXhr){ try{ state.uploadXhr.abort(); }catch(_){} }
   if(keepSession && state.sessionId && state.prepared){
     endRun("ready");
@@ -1009,97 +1097,117 @@ function failRun(reason, keepSession){
     endRun("idle");
   }
 }
-function finishRun(d){
+function finishRun(statusPayload){
   setProgress(100, "Complete");
   pushLog("[SUCCESS] Dubbing finished. Preparing preview…", "l-ok");
   endRun("done");
-  const sid = d.session_id || state.sessionId;
-  if(sid){ state.sessionId = sid; presentResult(sid, d); }
-}
-
-/* ============================================================
-   SSE event handlers — one for the auto "analyze" phase (/prepare),
-   one for the manual "dub" phase (/dub). Kept separate because their
-   "done"/"error" semantics differ (ready-to-dub vs. finished-with-video).
-   ============================================================ */
-function handlePrepareEvent(event, data){
-  switch(event){
-    case "log": {
-      pushLog(data);
-      const m = /source language detected:\s*(.+)/i.exec(data);
-      if(m) lockSourceLanguage(m[1].trim());
-      break;
-    }
-    case "progress": {
-      const p = safeJSON(data);
-      if(p && typeof p.percent === "number"){
-        // Map the /prepare stream's own 0-100 onto the bar's 48-100 band
-        // (0-48 was the raw upload, tracked separately via XHR progress).
-        setProgress(48 + p.percent * 0.52, p.message || undefined);
-      }
-      break;
-    }
-    case "error": {
-      pushLog(String(data), "l-err");
-      failRun("Analysis failed — please try re-uploading the video.");
-      break;
-    }
-    case "done": {
-      const d = safeJSON(data) || {};
-      state.prepared = true;
-      if(d.source_language) lockSourceLanguage(d.source_language);
-      setProgress(100, d.line_count ? `Ready — ${d.line_count} line(s) detected` : "Ready");
-      pushLog("[SUCCESS] Ready to dub. Pick a language/voice and press Generate Dub.", "l-ok");
-      endRun("ready");
-      break;
-    }
-    default: {
-      if(data) pushLog(`[${event}] ${data}`);
-    }
+  const sid = statusPayload.session_id || state.sessionId;
+  if(sid){
+    state.sessionId = sid;
+    presentResult(sid, statusPayload);
+    addHistoryEntry({
+      session_id: sid,
+      target_language: statusPayload.target_language || state.targetLanguage,
+      voice: voiceSelect.value,
+      download_url: statusPayload.download_url || `/download/${sid}`,
+      completed_at: Date.now()
+    });
   }
 }
 
-function handleDubEvent(event, data){
-  switch(event){
-    case "log": {
-      pushLog(data);
-      const m = /source language detected:\s*(.+)/i.exec(data);
-      if(m) lockSourceLanguage(m[1].trim());
-      break;
-    }
-    case "progress": {
-      const p = safeJSON(data);
-      if(p && typeof p.percent === "number"){
-        setProgress(p.percent, p.message || undefined);
+/* ============================================================
+   Polling — replaces the old SSE stream. Every POLL_INTERVAL_MS we ask
+   GET /status/{session_id}?since=<lastLogCount> for the job's current
+   status/percent/message plus any NEW log lines, and render them into the
+   console exactly like the old live stream did — the difference is this
+   survives idle-connection timeouts because no connection is held open
+   between polls.
+   ============================================================ */
+function stopPolling(){
+  if(state.pollTimer){ clearTimeout(state.pollTimer); state.pollTimer = null; }
+}
+
+function schedulePoll(sessionId, kind){
+  stopPolling();
+  state.pollTimer = setTimeout(()=> pollOnce(sessionId, kind), POLL_INTERVAL_MS);
+}
+
+async function pollOnce(sessionId, kind){
+  // kind: "prepare" | "dub" — only affects how we map percent onto the
+  // overall bar and what a terminal "done" means.
+  try{
+    const res = await fetch(`${API_BASE}/status/${encodeURIComponent(sessionId)}?since=${state.lastLogCount}`);
+    if(!res.ok){
+      if(res.status === 404){
+        pushLog("[ERROR] Session expired on the server.", "l-err");
+        failRun("Session expired.", false);
+        return;
       }
-      break;
+      throw new Error(`HTTP ${res.status}`);
     }
-    case "error": {
-      pushLog(String(data), "l-err");
-      // Video + transcript are still on the server — no need to re-upload,
-      // just let the person press Generate Dub again.
-      failRun("Dubbing failed.", true);
-      break;
+    const d = await res.json();
+
+    // Render any new log lines.
+    if(Array.isArray(d.logs)){
+      d.logs.forEach(line=>{
+        pushLog(line);
+        const m = /source language detected:\s*(.+)/i.exec(line);
+        if(m) lockSourceLanguage(m[1].trim());
+      });
     }
-    case "done": {
-      const d = safeJSON(data) || {};
-      finishRun(d);
-      break;
+    if(typeof d.log_count === "number") state.lastLogCount = d.log_count;
+    if(d.source_language) lockSourceLanguage(d.source_language);
+    setQueueNote(d.queue_position || 0);
+
+    if(kind === "prepare"){
+      // Map the server's own 0-100 (prepare phase) onto the bar's 48-100
+      // band; 0-48 was the raw upload, tracked via XHR progress.
+      const pct = typeof d.percent === "number" ? 48 + d.percent * 0.52 : undefined;
+      if(pct !== undefined) setProgress(pct, d.message || undefined);
+
+      if(d.status === "prepared"){
+        state.prepared = true;
+        setProgress(100, d.line_count ? `Ready — ${d.line_count} line(s) detected` : "Ready");
+        pushLog("[SUCCESS] Ready to dub. Pick a language/voice and press Generate Dub.", "l-ok");
+        endRun("ready");
+        return;
+      }
+      if(d.status === "error"){
+        pushLog("[ERROR] " + (d.error || "Analysis failed."), "l-err");
+        failRun("Analysis failed — please try re-uploading the video.", false);
+        return;
+      }
+      schedulePoll(sessionId, kind);
+    } else {
+      // dub phase — server's own percent maps 1:1 onto the bar.
+      if(typeof d.percent === "number") setProgress(d.percent, d.message || undefined);
+
+      if(d.status === "done"){
+        finishRun(d);
+        return;
+      }
+      if(d.status === "error"){
+        pushLog("[ERROR] " + (d.error || "Dubbing failed."), "l-err");
+        // Video + transcript are still on the server — no need to
+        // re-upload, just let the person press Generate Dub again.
+        failRun("Dubbing failed.", true);
+        return;
+      }
+      schedulePoll(sessionId, kind);
     }
-    default: {
-      if(data) pushLog(`[${event}] ${data}`);
-    }
+  }catch(err){
+    pushLog("[WARN] Status check failed (" + err.message + ") — retrying…", "l-warn");
+    // Transient network hiccup while polling — keep trying rather than
+    // failing the whole run immediately.
+    schedulePoll(sessionId, kind);
   }
 }
 
 /* ============================================================
    Result presentation
-   The result is no longer fetched into a JS blob first (that meant
-   waiting for the ENTIRE file to arrive before anything could play —
-   very slow on a weak connection). The <video> tag and the download
-   link both point straight at /download, so the browser streams it
-   natively (progressive playback, native Range/seek support, and the
-   OS's own download manager for the Save button).
+   The <video> tag and the download link both point straight at
+   /download, so the browser streams it natively (progressive playback,
+   native Range/seek support, and the OS's own download manager).
    ============================================================ */
 function presentResult(sessionId, meta){
   resultMeta.innerHTML = "";
@@ -1107,8 +1215,7 @@ function presentResult(sessionId, meta){
   if(meta.source_language) tags.push(["Source", meta.source_language]);
   if(meta.target_language) tags.push(["Target", meta.target_language]);
   if(typeof meta.segments !== "undefined") tags.push(["Segments", meta.segments]);
-  if(meta.voice_model) tags.push(["Voice model", meta.voice_model]);
-  if(typeof meta.speed_ratio !== "undefined") tags.push(["Speed", `${meta.speed_ratio}x`]);
+  if(meta.email_sent) tags.push(["Email", "Sent"]);
   tags.forEach(([k,v])=>{
     const el = document.createElement("span");
     el.className = "meta-tag";
@@ -1126,9 +1233,11 @@ function presentResult(sessionId, meta){
 }
 
 /* ============================================================
-   Network — Phase 1 (automatic): /upload (real XHR progress) -> /prepare
+   Network — Phase 1 (automatic): /upload (real XHR progress), which now
+   ALSO queues the background "prepare" job server-side and returns
+   immediately; we then poll /status instead of holding an SSE stream open.
    ============================================================ */
-function uploadAndPrepare(file){
+function uploadAndQueuePrepare(file){
   beginRun("uploading");
   setProgress(0, "Uploading…");
   pushLog(`[SYS] Uploading "${file.name}" (${fmtBytes(file.size)}) · Engine: ${state.engine}…`, "l-sys");
@@ -1162,9 +1271,12 @@ function uploadAndPrepare(file){
       return;
     }
     state.sessionId = j.session_id;
-    pushLog("[SUCCESS] Upload complete. Analyzing (extracting audio + transcribing)…", "l-ok");
-    setProgress(48, "Analyzing…");
-    prepareSession(j.session_id);
+    state.lastLogCount = 0;
+    pushLog("[SUCCESS] Upload complete. Queued for analysis (extract audio + transcribe) — this now runs in the background even if you close this tab.", "l-ok");
+    setProgress(48, "Queued for analysis…");
+    state.phase = "preparing";
+    refreshGenerateState();
+    schedulePoll(j.session_id, "prepare");
   });
 
   xhr.addEventListener("error", ()=>{
@@ -1178,30 +1290,9 @@ function uploadAndPrepare(file){
   xhr.send(fd);
 }
 
-async function prepareSession(sessionId){
-  state.phase = "preparing";
-  refreshGenerateState();
-  state.abort = new AbortController();
-  try{
-    const res = await fetch(`${API_BASE}/prepare/${encodeURIComponent(sessionId)}?engine=${encodeURIComponent(state.engine)}`, {
-      method: "GET", signal: state.abort.signal,
-    });
-    await readSSE(res, handlePrepareEvent);
-    if(state.phase === "preparing"){
-      pushLog("[WARN] Analysis stream closed unexpectedly before completion.", "l-warn");
-      failRun("Analysis stream ended early.");
-    }
-  }catch(err){
-    if(err.name === "AbortError"){ /* cancelled — a new file was picked */ }
-    else{
-      pushLog("[ERROR] Analysis connection failed: " + err.message, "l-err");
-      failRun("Analysis stream error.");
-    }
-  }
-}
-
 /* ============================================================
-   Network — Phase 2 (manual, button press): /dub
+   Network — Phase 2 (manual, button press): POST /dub queues the job and
+   returns immediately; we then poll /status the same way.
    ============================================================ */
 async function startDub(){
   if(!state.sessionId || !state.prepared || state.running) return;
@@ -1209,9 +1300,11 @@ async function startDub(){
   state.targetLanguage = targetLang.value;
   beginRun("dubbing");
   resultPanel.classList.remove("show");
-  setProgress(0, "Starting dub…");
+  setProgress(0, "Queuing dub job…");
+  state.lastLogCount = 0;
   const modelsCsv = state.ttsModels.join(",");
-  pushLog(`[SYS] Dubbing into ${targetLang.value} · Voice: ${voiceSelect.value} · Engine: ${state.engine} · TTS model(s): ${modelsCsv}`, "l-sys");
+  const emailVal = (notifyEmail.value || "").trim();
+  pushLog(`[SYS] Queuing dub -> ${targetLang.value} · Voice: ${voiceSelect.value} · Engine: ${state.engine} · TTS model(s): ${modelsCsv}` + (emailVal ? ` · Notify: ${emailVal}` : ""), "l-sys");
 
   const fd = new FormData();
   fd.append("session_id", state.sessionId);
@@ -1219,21 +1312,22 @@ async function startDub(){
   fd.append("voice_name", voiceSelect.value);
   fd.append("engine", state.engine);
   fd.append("tts_models", modelsCsv);
+  if(emailVal) fd.append("email", emailVal);
 
-  state.abort = new AbortController();
   try{
-    const res = await fetch(`${API_BASE}/dub`, { method:"POST", body:fd, signal:state.abort.signal });
-    await readSSE(res, handleDubEvent);
-    if(state.phase === "dubbing"){
-      pushLog("[WARN] Stream closed unexpectedly before completion.", "l-warn");
-      failRun("Dub stream ended early.", true);
+    const res = await fetch(`${API_BASE}/dub`, { method:"POST", body:fd });
+    if(!res.ok){
+      let detail = "";
+      try{ const j = await res.json(); detail = j.detail || JSON.stringify(j); }
+      catch(_){ try{ detail = await res.text(); }catch(__){} }
+      throw new Error(`HTTP ${res.status}${detail ? " — " + detail : ""}`);
     }
+    const j = await res.json();
+    pushLog(`[SUCCESS] Dub job queued (status: ${j.status}). This now runs in the background — you can close this tab` + (emailVal ? " and we'll email you the link." : "."), "l-ok");
+    schedulePoll(state.sessionId, "dub");
   }catch(err){
-    if(err.name === "AbortError"){ /* user cancelled */ }
-    else{
-      pushLog("[ERROR] Connection failed: " + err.message, "l-err");
-      failRun("Dub stream error.", true);
-    }
+    pushLog("[ERROR] Could not queue dub job: " + err.message, "l-err");
+    failRun("Dub queue request failed.", true);
   }
 }
 
@@ -1267,6 +1361,7 @@ buildMainVoiceSelect();
 buildTtsModelList();
 resetConsole();
 refreshGenerateState();
+renderHistory();
 checkHealth();
 </script>
 </body>
