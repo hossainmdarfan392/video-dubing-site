@@ -935,7 +935,7 @@ historyClearBtn.addEventListener("click", clearHistory);
    ============================================================ */
 function persistActiveJobs(){
   const arr = Object.values(state.jobs)
-    .filter(j => ["uploading","preparing","ready","dubbing"].includes(j.phase))
+    .filter(j => ["preparing","ready","dubbing"].includes(j.phase) && !j.sessionId.startsWith("_pending_"))
     .map(j => ({ session_id: j.sessionId, file_name: j.fileName, phase: j.phase, engine: j.engine }));
   try{ localStorage.setItem(ACTIVE_JOBS_KEY, JSON.stringify(arr)); }catch(_){}
 }
@@ -1080,30 +1080,52 @@ window.addEventListener("drop",(e)=> e.preventDefault());
 function stopPollingJob(job){
   if(job.pollTimer){ clearTimeout(job.pollTimer); job.pollTimer = null; }
 }
-function scheduleJobPoll(sid, kind){
+function scheduleJobPoll(sid, _kind, delayMs){
   const job = state.jobs[sid];
   if(!job) return;
   stopPollingJob(job);
-  job.pollTimer = setTimeout(()=> pollJobOnce(sid, kind), POLL_INTERVAL_MS);
+  // While the server is unreachable (e.g. free hosting waking up) back off a
+  // little, but never give up — the job itself keeps running server-side.
+  const backoff = job.failCount ? Math.min(10000, POLL_INTERVAL_MS + job.failCount * 1500) : POLL_INTERVAL_MS;
+  job.pollTimer = setTimeout(()=> pollJobOnce(sid), typeof delayMs === "number" ? delayMs : backoff);
 }
 
-async function pollJobOnce(sid, kind){
+function refreshFocusedBar(job, d){
+  if(state.focusedId !== job.sessionId) return;
+  pctText.textContent = Math.round(job.percent)+"%";
+  progressFill.style.width = Math.round(job.percent)+"%";
+  stageText.textContent = job.message || phaseLabel(job.phase);
+  setQueueNote((d && d.queue_position) || 0);
+}
+function settleJob(job, phase){
+  job.phase = phase;
+  job.failCount = 0;
+  persistActiveJobs();
+  renderJobsList();
+  if(state.focusedId === job.sessionId) setDashboardFor(job);
+}
+
+async function pollJobOnce(sid){
   const job = state.jobs[sid];
   if(!job) return;
   try{
-    const res = await fetch(`${API_BASE}/status/${encodeURIComponent(sid)}?since=${job.lastLogCount}`);
-    if(!res.ok){
-      if(res.status === 404){
-        appendJobLog(job, "[ERROR] Session expired on the server.");
-        job.phase = "error"; job.errorMsg = "Session expired.";
-        persistActiveJobs(); renderJobsList();
-        if(state.focusedId === sid) setDashboardFor(job);
-        return;
-      }
-      throw new Error(`HTTP ${res.status}`);
+    const res = await fetch(`${API_BASE}/status/${encodeURIComponent(sid)}?since=${job.lastLogCount}`, { cache:"no-store" });
+    if(res.status === 404){
+      // The server answered (so it is awake) but has no such session: its
+      // files are gone — free hosting restarted/slept, or the session expired.
+      appendJobLog(job, "[ERROR] The server no longer has this job (it restarted or the session expired). Please add the video again.");
+      job.errorMsg = "Server restarted / session expired — add the video again.";
+      job.prepared = false;
+      settleJob(job, "error");
+      return;
     }
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
     const d = await res.json();
 
+    if(job.failCount){
+      appendJobLog(job, "[SUCCESS] Reconnected to the server — job is still tracked.");
+      job.failCount = 0;
+    }
     if(Array.isArray(d.logs)){
       d.logs.forEach(line=>{
         appendJobLog(job, line);
@@ -1115,66 +1137,79 @@ async function pollJobOnce(sid, kind){
     if(d.source_language) job.sourceLanguage = d.source_language;
     if(typeof d.video_duration === "number") job.videoDuration = d.video_duration;
     if(typeof d.line_count === "number") job.lineCount = d.line_count;
+    if(d.target_language) job.targetLanguage = d.target_language;
+    job.prepared = !!d.prepared;
 
-    if(kind === "prepare"){
-      if(typeof d.percent === "number") job.percent = 48 + d.percent * 0.52;
-      job.message = d.message || job.message;
-
-      if(d.status === "prepared"){
-        job.prepared = true;
-        job.phase = "ready";
-        job.percent = 100;
-        job.message = d.line_count ? `Ready — ${d.line_count} line(s) detected` : "Ready";
-        appendJobLog(job, "[SUCCESS] Ready to dub. Pick a language/voice and press Generate Dub.");
-        persistActiveJobs(); renderJobsList();
-        if(state.focusedId === sid) setDashboardFor(job);
-        return;
-      }
-      if(d.status === "error"){
-        appendJobLog(job, "[ERROR] " + (d.error || "Analysis failed."));
-        job.phase = "error"; job.errorMsg = d.error || "Analysis failed.";
-        persistActiveJobs(); renderJobsList();
-        if(state.focusedId === sid) setDashboardFor(job);
-        return;
-      }
-      if(state.focusedId === sid){ pctText.textContent = Math.round(job.percent)+"%"; progressFill.style.width = Math.round(job.percent)+"%"; stageText.textContent = job.message; setQueueNote(d.queue_position||0); }
-      updateJobRowLive(sid);
-      scheduleJobPoll(sid, kind);
-    }else{
-      if(typeof d.percent === "number") job.percent = d.percent;
-      job.message = d.message || job.message;
-
-      if(d.status === "done"){
-        job.phase = "done";
+    switch(d.status){
+      case "done": {
         job.percent = 100;
         job.downloadUrl = d.download_url || `/download/${sid}`;
         job.segments = d.segments;
         job.emailSent = !!d.email_sent;
+        job.message = "Complete";
         appendJobLog(job, "[SUCCESS] Dubbing finished.");
-        persistActiveJobs(); renderJobsList();
         addHistoryEntry({
           session_id: sid, file_name: job.fileName, target_language: job.targetLanguage,
           voice: job.voice, download_url: job.downloadUrl, completed_at: Date.now()
         });
-        if(state.focusedId === sid) setDashboardFor(job);
+        settleJob(job, "done");
         return;
       }
-      if(d.status === "error"){
-        appendJobLog(job, "[ERROR] " + (d.error || "Dubbing failed."));
-        job.phase = "error"; job.errorMsg = d.error || "Dubbing failed.";
-        persistActiveJobs(); renderJobsList();
-        if(state.focusedId === sid) setDashboardFor(job);
+      case "error": {
+        job.errorMsg = d.error || "Failed.";
+        job.percent = job.percent || 0;
+        settleJob(job, "error");
         return;
       }
-      if(state.focusedId === sid){ pctText.textContent = Math.round(job.percent)+"%"; progressFill.style.width = Math.round(job.percent)+"%"; stageText.textContent = job.message; setQueueNote(d.queue_position||0); }
-      updateJobRowLive(sid);
-      scheduleJobPoll(sid, kind);
+      case "prepared": {
+        job.percent = 100;
+        job.message = d.line_count ? `Ready — ${d.line_count} line(s) detected` : "Ready";
+        if(job.phase !== "ready") appendJobLog(job, "[SUCCESS] Ready to dub. Pick a language/voice and press Generate Dub.");
+        settleJob(job, "ready");
+        return;
+      }
+      case "queued_dub":
+      case "dubbing": {
+        job.phase = "dubbing";
+        job.percent = typeof d.percent === "number" ? d.percent : job.percent;
+        job.message = d.message || (d.status === "queued_dub" ? "Queued for dubbing…" : "Dubbing…");
+        break;
+      }
+      default: { // uploaded / queued_prepare / preparing
+        job.phase = "preparing";
+        job.percent = 48 + (typeof d.percent === "number" ? d.percent : 0) * 0.52;
+        job.message = d.message || "Analyzing…";
+      }
     }
+    refreshFocusedBar(job, d);
+    updateJobRowLive(sid);
+    scheduleJobPoll(sid);
   }catch(err){
-    appendJobLog(job, "[WARN] Status check failed (" + err.message + ") — retrying…");
-    scheduleJobPoll(sid, kind);
+    // Network down / offline / server waking up: keep the job, keep retrying.
+    job.failCount = (job.failCount || 0) + 1;
+    job.message = "Reconnecting to server… (it may be waking up)";
+    if(job.failCount === 1 || job.failCount % 6 === 0){
+      appendJobLog(job, "[WARN] Can't reach the server right now (" + err.message + ") — the job keeps running there; retrying automatically…");
+    }
+    refreshFocusedBar(job, null);
+    updateJobRowLive(sid);
+    scheduleJobPoll(sid);
   }
 }
+
+/* When the tab becomes visible again or the connection returns, poll every
+   active job right away instead of waiting for the next timer tick. */
+function pollAllNow(){
+  Object.values(state.jobs).forEach(job=>{
+    if(["preparing","dubbing","ready"].includes(job.phase) && !job.sessionId.startsWith("_pending_")){
+      stopPollingJob(job);
+      pollJobOnce(job.sessionId);
+    }
+  });
+}
+document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState === "visible") pollAllNow(); });
+window.addEventListener("online", pollAllNow);
+window.addEventListener("focus", pollAllNow);
 
 /* ============================================================
    Result presentation (for the focused job)
@@ -1310,7 +1345,7 @@ function retryPrepare(sid){
    ============================================================ */
 async function startDub(sid){
   const job = state.jobs[sid];
-  if(!job || job.phase !== "ready") return;
+  if(!job || !(job.phase === "ready" || (job.phase === "error" && job.prepared))) return;
 
   job.targetLanguage = targetLang.value;
   job.voice = voiceSelect.value;
@@ -1358,52 +1393,44 @@ async function startDub(sid){
    reopened tab NOT lose an in-progress job.
    ============================================================ */
 async function resumeActiveJobs(){
+  // Re-create every job that was still active when the page was last closed /
+  // refreshed, IMMEDIATELY (no waiting on the network), then let the normal
+  // poller re-attach. If the server is asleep the poller just keeps retrying —
+  // nothing is dropped from localStorage until the server itself says the
+  // session is gone (404).
   const pointers = loadActiveJobsPointer();
   if(pointers.length === 0) return;
-  for(const ptr of pointers){
-    try{
-      const res = await fetch(`${API_BASE}/status/${encodeURIComponent(ptr.session_id)}?since=0`);
-      if(!res.ok) continue; // gone server-side — drop it silently
-      const d = await res.json();
-      const job = newJob(ptr.session_id, ptr.file_name || ptr.session_id, 0);
-      job.engine = ptr.engine || "hybrid";
-      job.lastLogCount = d.log_count || 0;
-      job.sourceLanguage = d.source_language || null;
-      job.videoDuration = d.video_duration || null;
-      job.lineCount = d.line_count || 0;
-      job.targetLanguage = d.target_language || null;
-      (d.logs || []).forEach(line => job.logs.push({ ts: nowStamp(), msg: line }));
-
-      if(d.status === "done"){
-        job.phase = "done"; job.percent = 100;
-        job.downloadUrl = d.download_url; job.segments = d.segments; job.emailSent = !!d.email_sent;
-      }else if(d.status === "error"){
-        job.phase = "error"; job.errorMsg = d.error || "Failed.";
-      }else if(d.status === "prepared"){
-        job.phase = "ready"; job.prepared = true; job.percent = 100;
-      }else if(["queued_prepare","preparing"].includes(d.status)){
-        job.phase = "preparing"; job.percent = 48 + (d.percent||0) * 0.52;
-        scheduleJobPoll(ptr.session_id, "prepare");
-      }else if(["queued_dub","dubbing"].includes(d.status)){
-        job.phase = "dubbing"; job.percent = d.percent || 0;
-        scheduleJobPoll(ptr.session_id, "dub");
-      }
-      state.jobs[ptr.session_id] = job;
-    }catch(_){ /* network hiccup on resume — skip this one, keep going */ }
-  }
+  pointers.forEach(ptr=>{
+    if(!ptr.session_id || state.jobs[ptr.session_id]) return;
+    const job = newJob(ptr.session_id, ptr.file_name || ptr.session_id, 0);
+    job.engine = ptr.engine || "hybrid";
+    job.phase = ["preparing","ready","dubbing"].includes(ptr.phase) ? ptr.phase : "preparing";
+    job.prepared = job.phase !== "preparing";
+    job.percent = job.phase === "ready" ? 100 : 0;
+    job.message = "Reconnecting to server…";
+    job.lastLogCount = 0; // replay the full server-side log
+    state.jobs[ptr.session_id] = job;
+  });
   renderJobsList();
   persistActiveJobs();
-  const firstNonTerminal = Object.values(state.jobs).find(j => j.phase !== "done" && j.phase !== "error") || Object.values(state.jobs)[0];
-  if(firstNonTerminal) focusJob(firstNonTerminal.sessionId);
+  const first = Object.values(state.jobs)[0];
+  if(first) focusJob(first.sessionId);
+  Object.values(state.jobs).forEach((job, i)=> scheduleJobPoll(job.sessionId, null, 200 + i * 300));
 }
 
 /* ============================================================
    Backend health check
    ============================================================ */
+let healthTries = 0;
 async function checkHealth(){
   try{
-    const res = await fetch(`${API_BASE}/health`, { method:"GET" });
+    const ctrl = new AbortController();
+    const to = setTimeout(()=> ctrl.abort(), 15000);
+    const res = await fetch(`${API_BASE}/health`, { method:"GET", cache:"no-store", signal: ctrl.signal });
+    clearTimeout(to);
+    if(!res.ok) throw new Error("HTTP " + res.status);
     const j = await res.json();
+    healthTries = 0;
     if(j.status === "ok"){
       const hasKeys = (j.gemini_keys_configured|0) > 0 && (j.groq_keys_configured|0) > 0;
       serverDot.style.background = hasKeys ? "var(--ok)" : "var(--warn)";
@@ -1413,8 +1440,16 @@ async function checkHealth(){
       serverStatusText.textContent = "Backend degraded";
     }
   }catch(_){
-    serverDot.style.background = "var(--err)";
-    serverStatusText.textContent = "Backend unreachable";
+    healthTries++;
+    if(healthTries <= 24){
+      // Free hosting sleeps after inactivity and can take up to a minute to wake.
+      serverDot.style.background = "var(--warn)";
+      serverStatusText.textContent = "Waking up server… (up to ~1 min)";
+      setTimeout(checkHealth, 5000);
+    }else{
+      serverDot.style.background = "var(--err)";
+      serverStatusText.textContent = "Backend unreachable";
+    }
   }
 }
 
