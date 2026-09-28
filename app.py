@@ -73,31 +73,24 @@ fired at once:
     ever sees it. Downstream, it is still treated as one seamless voice
     track — nothing else in the pipeline needs to know it was chunked.
 
-After the (chunked) audio comes back, the pipeline works like a real
-audio engineer instead of guessing:
+Timeline-anchored fitting (how the voice is matched to the video)
+-------------------------------------------------------------------
+Every chunk of consecutive lines keeps the video timestamp where its first
+line begins, and its voice is placed on a silent timeline AT THAT TIME — so
+the dub can never drift out of sync and no global speed-up is needed:
 
-  1. SILENCE TRIM (adaptive ladder, locked to 400-500ms): every internal
-     silent gap longer than a threshold is trimmed down (FFmpeg
-     `silenceremove`, real audio-level detection — not a timestamp
-     guess). The ladder starts at 500ms. If the video is short and the
-     generated speech is still too long relative to it after a 500ms
-     trim, the threshold is automatically lowered in steps (500 -> 400ms)
-     — never lower, because that starts cutting into natural
-     between-sentence pauses, which makes the voice sound
-     rushed/mashed-together rather than helping. This only ever trims
-     SILENCE, never speech (peak-level detection, not a blind timestamp
-     cut, so it never eats into an actual word).
-  2. DURATION MATCH: the trimmed speech duration is compared against the
-     ACTUAL VIDEO DURATION (not the sum of Whisper segment timings) and a
-     single pitch-preserving speed ratio is computed and applied to the
-     WHOLE track at once — so every line speeds up or slows down by
-     exactly the same amount, with no "one line fast, one line normal"
-     artifact. The applied ratio is ALWAYS locked to the
-     ATEMPO_LOCK_MIN..ATEMPO_LOCK_MAX (1.15x-1.30x) band — never looser,
-     never tighter — so the dub always matches the video's timing without
-     ever sounding unnaturally sped up or slowed down.
-  3. MUX: the video stream is copied bit-for-bit (`-c:v copy`) — zero
-     re-encoding, zero quality loss — only the audio track is replaced.
+  1. PAUSES are capped, never deleted: silence is detected at a very low
+     threshold (soft word endings are never mistaken for silence); only pauses
+     longer than ~0.9s are shortened to ~500ms; speech is never touched.
+  2. If a chunk's voice is LONGER than its window, the first remedy is to have
+     the LLM condense that chunk's wording (same meaning, fewer words) and
+     re-voice it; only then a small speed-up (soft limit 1.12x, hard ceiling
+     1.20x, per chunk, pitch preserved). A chunk that fits is left at natural
+     speed (no forced speed-up).
+  3. COMPLETENESS guard: if the TTS model skipped text (voice far too short for
+     the script), the chunk is regenerated.
+  4. MUX: video copied bit-for-bit; the voice is NEVER cut — a longer voice is
+     kept whole, a shorter one is padded with silence.
 
 Backup / never-crash design
 -----------------------------
@@ -197,6 +190,7 @@ import os
 import re
 import shutil
 import smtplib
+import statistics
 import time
 import urllib.request
 import urllib.error
@@ -206,7 +200,7 @@ import wave
 from dataclasses import asdict, dataclass, field
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Callable, Dict, List, Optional, Tuple
 
 import aiofiles
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
@@ -384,7 +378,7 @@ def parse_selected_tts_models(raw: str) -> List[str]:
 TTS_CALL_TIMEOUT_SECONDS = 150
 
 # --- TTS chunking (RAM protection + voice-quality guard) --------------------
-TTS_CHUNK_CHAR_BUDGET = int(os.environ.get("TTS_CHUNK_CHAR_BUDGET", "1500") or "1500")
+TTS_CHUNK_CHAR_BUDGET = int(os.environ.get("TTS_CHUNK_CHAR_BUDGET", "900") or "900")
 # (<=1500 by product rule; lowering it via env makes each generation shorter,
 #  which reduces the model's tendency to rush near the end of a long take.)
 TTS_CHUNK_CHAR_BUDGET = max(300, min(1500, TTS_CHUNK_CHAR_BUDGET))
@@ -394,6 +388,40 @@ TTS_CHUNK_CHAR_BUDGET = max(300, min(1500, TTS_CHUNK_CHAR_BUDGET))
 # word ran into the next) and never arbitrarily higher (which would
 # introduce an audible dead-air gap that breaks the video's sync/pacing).
 TTS_CHUNK_SILENCE_PAD_MS = 500
+
+# --- Timeline-anchored voice fitting (replaces the old "one global speed-up") --
+# OLD design: one continuous voice track, silence removed wholesale, then ONE
+# global speed-up locked to 1.15-1.30x, then the mux cut the audio at the video
+# end. That is why sentences vanished (mux truncation + pauses deleted) and the
+# voice sounded rushed (a forced speed-up even when none was needed).
+# NEW design (how professional dubbing tools work):
+#   * the script is split into chunks of consecutive lines that keep their
+#     ORIGINAL video timestamps;
+#   * every chunk is voiced, then placed on a silent timeline AT ITS OWN START
+#     TIME, so the dub can never drift out of sync;
+#   * if a chunk's voice is longer than its time window, the FIRST remedy is to
+#     have the LLM condense that chunk's wording (same meaning, fewer words) and
+#     re-voice it — speeding up is the last, small resort (never above
+#     FIT_SPEED_HARD_MAX);
+#   * pauses are only CAPPED (long ones shortened to ~500ms), never deleted, and
+#     speech is never touched; nothing is ever cut off at the end.
+TTS_CHUNK_MAX_SOURCE_SECONDS = float(os.environ.get("TTS_CHUNK_MAX_SOURCE_SECONDS", "30") or "30")
+FIT_SPEED_SOFT_MAX = float(os.environ.get("FIT_SPEED_SOFT_MAX", "1.12") or "1.12")  # condense above this
+FIT_SPEED_HARD_MAX = float(os.environ.get("FIT_SPEED_HARD_MAX", "1.20") or "1.20")  # never faster than this
+CONDENSE_ATTEMPTS = int(os.environ.get("CONDENSE_ATTEMPTS", "2") or "2")
+MIN_CHUNK_GAP_SECONDS = 0.25          # breathing room if a chunk overflows into the next window
+PAUSE_CAP_SECONDS = TTS_CHUNK_SILENCE_PAD_MS / 1000.0   # long pauses are capped to ~500ms
+PAUSE_CAP_MIN_PAUSE_SECONDS = 0.9     # only pauses longer than this are shortened
+PAUSE_DETECT_DB = -45.0               # deliberately low so quiet word endings are never seen as "silence"
+TTS_TRUNCATION_RATIO = 0.5            # voice shorter than half of what the text needs => text was skipped
+# Natural speaking speed (characters per second incl. spaces) per target language,
+# used to give the translator a per-line length budget (max_chars).
+TARGET_CPS: Dict[str, float] = {
+    "english": 15, "spanish": 16, "french": 15, "german": 14, "italian": 15,
+    "portuguese": 15, "hindi": 13, "bengali": 13, "arabic": 13, "japanese": 8,
+    "korean": 9, "chinese": 5.5, "russian": 14, "turkish": 14, "dutch": 15,
+    "indonesian": 15, "vietnamese": 14, "thai": 12, "polish": 14, "ukrainian": 14,
+}
 
 GEMINI_VOICE_NAMES: List[str] = [
     "Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede",
@@ -436,8 +464,10 @@ HARD_SPEED_MIN = 0.25
 HARD_SPEED_MAX = 4.0
 SOFT_SPEED_MAX = 1.3
 
-ATEMPO_LOCK_MIN = 1.15
-ATEMPO_LOCK_MAX = 1.30
+# Speed limits now apply PER CHUNK and only when really needed (no forced
+# speed-up): 1.0 = natural speed, FIT_SPEED_HARD_MAX = absolute ceiling.
+ATEMPO_LOCK_MIN = 1.0
+ATEMPO_LOCK_MAX = FIT_SPEED_HARD_MAX
 
 # --- Voice "energy consistency" filters (FFmpeg) ------------------------------
 # Problem: Gemini TTS starts each take well but tends to RUSH and lose energy
@@ -1049,11 +1079,24 @@ async def _keepalive_loop() -> None:
 # FFmpeg / FFprobe helpers (async, disk-based)
 # --------------------------------------------------------------------------- #
 
+def _lower_priority() -> None:
+    """Run ffmpeg at lower CPU priority so the API (/status polling every
+    second) stays responsive on Render's tiny CPU share."""
+    try:
+        os.nice(10)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_SUBPROC_KW = {"preexec_fn": _lower_priority} if hasattr(os, "nice") else {}
+
+
 async def _run(cmd: List[str]) -> str:
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **_SUBPROC_KW,
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
@@ -1068,6 +1111,7 @@ async def _run_stderr(cmd: List[str]) -> str:
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **_SUBPROC_KW,
     )
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
@@ -1161,28 +1205,59 @@ async def _encode_wav(cmd_in: List[str], out_audio: Path,
 
 
 async def trim_internal_silences(src_audio: Path, out_audio: Path,
-                                 min_silence_seconds: float,
-                                 threshold_db: float = SILENCE_DB_THRESHOLD) -> None:
+                                 min_silence_seconds: float = PAUSE_CAP_MIN_PAUSE_SECONDS,
+                                 threshold_db: float = PAUSE_DETECT_DB) -> Tuple[float, float]:
     """
-    Strip every internal silent gap of at least `min_silence_seconds`
-    (audio level below `threshold_db`) ANYWHERE in the clip — not just
-    leading/trailing — using FFmpeg's `silenceremove` filter in continuous
-    (stop_periods=-1) mode with peak-level detection. This is a measured
-    audio-level cut, never a blind timestamp guess, so it only ever
-    removes genuine silence and never eats into actual speech; the
-    min_silence_seconds floor itself is always clamped to the product's
-    locked 400-500ms band by the caller (see SILENCE_TRIM_LADDER_MS), so a
-    gap shorter than a natural breath is never mistaken for trimmable dead
-    air.
+    SAFE pause handling (replaces the old blanket `silenceremove`, which deleted
+    every pause completely — gluing words/sentences together — and could eat
+    quiet word endings). Here:
+      * silence is DETECTED first (very low threshold, so soft speech is never
+        classified as silence);
+      * a pause longer than `min_silence_seconds` is SHORTENED to
+        PAUSE_CAP_SECONDS (~500ms) — never deleted; shorter, natural pauses are
+        left exactly as the voice produced them;
+      * leading/trailing silence is trimmed but a small natural margin is kept;
+      * audio between pauses (the speech) is copied through untouched.
+    Returns (duration_before, duration_after).
     """
-    min_silence_seconds = max(0.03, min_silence_seconds)
-    audio_filter = (
-        f"silenceremove=stop_periods=-1:"
-        f"stop_duration={min_silence_seconds:.3f}:"
-        f"stop_threshold={threshold_db:.1f}dB:"
-        f"detection=peak"
-    )
-    await _encode_wav(["-i", str(src_audio)], out_audio, audio_filter)
+    dur = await probe_duration(src_audio)
+    log = await _run_stderr([
+        FFMPEG_BIN, "-hide_banner", "-i", str(src_audio),
+        "-af", f"silencedetect=noise={threshold_db:.0f}dB:d=0.15",
+        "-f", "null", "-",
+    ])
+    starts = [float(x) for x in re.findall(r"silence_start:\s*(-?[\d.]+)", log)]
+    ends = [float(x) for x in re.findall(r"silence_end:\s*(-?[\d.]+)", log)]
+    keep: List[Tuple[float, float]] = []
+    cur: Optional[float] = 0.0
+    for i, st in enumerate(starts):
+        en = ends[i] if i < len(ends) else dur
+        st, en = max(0.0, st), min(dur, en)
+        if st <= 0.02:                      # leading silence: keep a small margin
+            cur = max(0.0, en - 0.08)
+            continue
+        if en >= dur - 0.02:                # trailing silence: keep a small margin
+            keep.append((cur, min(dur, st + 0.12)))
+            cur = None
+            break
+        if (en - st) >= min_silence_seconds:  # long pause: shorten, never delete
+            keep.append((cur, st + PAUSE_CAP_SECONDS))
+            cur = en
+    if cur is not None:
+        keep.append((cur, dur))
+    keep = [(a, b) for a, b in keep if b - a > 0.02]
+    if not keep or (len(keep) == 1 and keep[0][0] <= 0.001 and keep[0][1] >= dur - 0.001):
+        await _encode_wav(["-i", str(src_audio)], out_audio)
+        return dur, dur
+    keep = keep[:200]  # keep the filter graph bounded
+    parts = [f"[0:a]atrim={a:.3f}:{b:.3f},asetpts=PTS-STARTPTS[p{i}]" for i, (a, b) in enumerate(keep)]
+    graph = ";".join(parts) + ";" + "".join(f"[p{i}]" for i in range(len(keep))) + \
+        f"concat=n={len(keep)}:v=0:a=1[o]"
+    await _run([
+        FFMPEG_BIN, "-y", "-i", str(src_audio), "-filter_complex", graph, "-map", "[o]",
+        "-ar", str(TTS_SAMPLE_RATE), "-ac", str(TTS_CHANNELS), "-c:a", "pcm_s16le", str(out_audio),
+    ])
+    return dur, await probe_duration(out_audio)
 
 
 async def time_stretch_to_duration(src_audio: Path, target_seconds: float,
@@ -1205,13 +1280,23 @@ async def time_stretch_to_duration(src_audio: Path, target_seconds: float,
 
 async def mux_video_with_audio(video_path: Path, audio_path: Path,
                                out_path: Path) -> None:
+    """
+    Replace the video's audio without EVER cutting speech. (The old
+    `apad` + `-shortest` combination ended the file at the video's end, which
+    silently deleted the last sentences whenever the voice ran longer than the
+    video.) `apad=whole_dur` only pads a SHORTER voice with silence up to the
+    video length; a longer voice is kept in full. Video stream is copied
+    bit-for-bit (zero quality loss).
+    """
+    vdur = await probe_duration(video_path)
     await _run([
         FFMPEG_BIN, "-y",
         "-i", str(video_path),
         "-i", str(audio_path),
         "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-        "-filter:a", "apad", "-shortest",
+        "-af", f"apad=whole_dur={vdur:.3f}",
+        "-movflags", "+faststart",
         str(out_path),
     ])
 
@@ -1532,6 +1617,7 @@ async def _gemini_translate_chunk(
         "that same segment. (The ONLY exception to any of this is the "
         "opening hook rule below, if it applies to this chunk.)\n\n"
         f"{hook_section}"
+        f"{_length_rule_text()}"
         "TASK 2 — COMPLETENESS (CRITICAL): the output 'segments' array MUST "
         "have EXACTLY the same number of objects as the input, same order, "
         "same start/end timestamps. Never skip, merge, drop, or duplicate.\n\n"
@@ -1602,11 +1688,13 @@ async def gemini_translate_all(
     transcript_segments: List[Dict[str, object]],
     source_language: str,
     target_language: str,
+    progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
     if not transcript_segments:
         raise RuntimeError("Nothing to translate — the transcript is empty.")
 
     chunks = _chunk_by_char_budget(transcript_segments)
+    budgets = _segment_max_chars(transcript_segments, target_language)
 
     full_script_context = "\n".join(
         str(seg.get("text", "")).strip() for seg in transcript_segments if seg.get("text")
@@ -1623,6 +1711,7 @@ async def gemini_translate_all(
                 "start": float(seg.get("start", 0.0)),
                 "end": float(seg.get("end", 0.0)),
                 "text": seg.get("text", ""),
+                **({"max_chars": budgets[id(seg)]} if id(seg) in budgets else {}),
             }
             for seg in chunk
         ]
@@ -1654,6 +1743,11 @@ async def gemini_translate_all(
             ]
 
         all_segments.extend(result_segments)
+        if progress_cb:
+            try:
+                progress_cb(chunk_idx + 1, len(chunks))
+            except Exception:  # noqa: BLE001
+                pass
 
     return {
         "source_language": detected_source_language or source_language,
@@ -1706,7 +1800,11 @@ async def _gemini_retouch_chunk(
         "segment, same order, same count.\n"
         "3. If a draft translation is already natural and correct, keep it "
         "exactly as-is — do not change wording just to change it.\n"
-        "4. Do not change the MEANING of any line versus its source.\n\n"
+        "4. Do not change the MEANING of any line versus its source.\n"
+        "5. Each segment has 'max_chars' (the longest its spoken line may be "
+        "to fit its moment in the video). Never make a line LONGER than "
+        "max_chars; if the draft is longer, tighten the wording (same "
+        "meaning, fewer words).\n\n"
         "Respond with ONLY raw JSON (no markdown fences), in exactly this "
         'shape: {"segments": [{"start": 0.0, "end": 3.2, '
         '"text": "<retouched translation>"}]}'
@@ -1771,6 +1869,7 @@ async def gemini_retouch_all(
     raw_source_segments: List[Dict[str, object]],
     source_language: str,
     target_language: str,
+    progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
     """
     Hybrid-engine retouch pass: takes Groq's already-complete draft
@@ -1789,6 +1888,7 @@ async def gemini_retouch_all(
 
     chunks = _chunk_by_char_budget(draft_segments)
     source_chunks = _chunk_by_char_budget(raw_source_segments) if raw_source_segments else []
+    budgets = _segment_max_chars(draft_segments, target_language)
 
     all_segments: List[Dict[str, object]] = []
     fallback_count = 0
@@ -1801,12 +1901,15 @@ async def gemini_retouch_all(
             src_text = ""
             if i < len(source_chunk) and source_chunk[i] is not None:
                 src_text = str(source_chunk[i].get("text", ""))
-            payload_chunk.append({
+            item = {
                 "start": float(seg.get("start", 0.0)),
                 "end": float(seg.get("end", 0.0)),
                 "source_text": src_text,
                 "text": str(seg.get("text", "")),
-            })
+            }
+            if id(seg) in budgets:
+                item["max_chars"] = budgets[id(seg)]
+            payload_chunk.append(item)
 
         result_segments: List[Dict[str, object]] = []
         for attempt in range(1 + TRANSLATE_CHUNK_RETRIES):
@@ -1835,6 +1938,11 @@ async def gemini_retouch_all(
             ]
 
         all_segments.extend(result_segments)
+        if progress_cb:
+            try:
+                progress_cb(chunk_idx + 1, len(chunks))
+            except Exception:  # noqa: BLE001
+                pass
 
     return {
         "segments": all_segments,
@@ -1890,6 +1998,7 @@ async def _groq_translate_chunk(
         "shortening its scope. (The ONLY exception to any of this is the "
         "opening hook rule below, if it applies to this chunk.)\n\n"
         f"{hook_section}"
+        f"{_length_rule_text()}"
         "TASK 2 — COMPLETENESS (CRITICAL): The number of objects in the "
         "output 'segments' array MUST exactly equal the number of input "
         "segments in THIS chunk — a strict 1:1 mapping, same order. NEVER "
@@ -1986,11 +2095,13 @@ async def groq_translate_all(
     transcript_segments: List[Dict[str, object]],
     source_language: str,
     target_language: str,
+    progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
     if not transcript_segments:
         raise RuntimeError("Nothing to translate — the transcript is empty.")
 
     chunks: List[List[Dict[str, object]]] = _chunk_by_char_budget(transcript_segments)
+    budgets = _segment_max_chars(transcript_segments, target_language)
 
     full_script_context = "\n".join(
         str(seg.get("text", "")).strip() for seg in transcript_segments if seg.get("text")
@@ -2007,6 +2118,7 @@ async def groq_translate_all(
                 "start": float(seg.get("start", 0.0)),
                 "end": float(seg.get("end", 0.0)),
                 "text": seg.get("text", ""),
+                **({"max_chars": budgets[id(seg)]} if id(seg) in budgets else {}),
             }
             for seg in chunk
         ]
@@ -2041,6 +2153,11 @@ async def groq_translate_all(
             ]
 
         all_segments.extend(result_segments)
+        if progress_cb:
+            try:
+                progress_cb(chunk_idx + 1, len(chunks))
+            except Exception:  # noqa: BLE001
+                pass
 
     return {
         "source_language": detected_source_language or source_language,
@@ -2050,6 +2167,53 @@ async def groq_translate_all(
         "fallback_count": fallback_count,
         "fallback_ranges": fallback_ranges,
     }
+
+
+def _target_cps(target_language: str) -> float:
+    lang = (target_language or "").strip().lower()
+    for key, cps in TARGET_CPS.items():
+        if key in lang:
+            return cps
+    if "bangla" in lang:
+        return TARGET_CPS["bengali"]
+    return 13.0
+
+
+def _segment_max_chars(segments: List[Dict[str, object]], target_language: str) -> Dict[int, int]:
+    """
+    Per-line length budget for the translator: how many characters a line may
+    have so its VOICE fits the video moment it belongs to at natural speed.
+    Slot = time from this line's start to the next line's start (the gap after
+    a line is free time the voice may use). Returns {id(segment): max_chars}
+    (empty if the transcript has no usable timestamps).
+    """
+    out: Dict[int, int] = {}
+    if len(segments) < 2:
+        return out
+    usable = sum(1 for sg in segments if float(sg.get("end", 0) or 0) > float(sg.get("start", 0) or 0))
+    if usable < max(2, len(segments) // 2):
+        return out
+    cps = _target_cps(target_language)
+    for i, sg in enumerate(segments):
+        st = float(sg.get("start", 0) or 0)
+        en = float(sg.get("end", 0) or 0)
+        nxt = float(segments[i + 1].get("start", 0) or 0) if i + 1 < len(segments) else en + 0.8
+        slot = max(en - st, nxt - st, 0.6)
+        out[id(sg)] = max(10, int(slot * cps * 0.95))
+    return out
+
+
+def _length_rule_text() -> str:
+    return (
+        "LENGTH RULE (dubbing timing — very important): every input segment "
+        "has a 'max_chars' number = the longest its spoken translation may be "
+        "so the voice fits that exact moment of the video at a natural, "
+        "comfortable speaking pace. Keep each translation at or under "
+        "max_chars by choosing concise, natural wording — NEVER by dropping "
+        "meaning, and never by merging/splitting/moving text between "
+        "segments. If a faithful translation truly cannot fit, get as close "
+        "to max_chars as you can.\n\n"
+    )
 
 
 def _chunk_by_char_budget(
@@ -2180,49 +2344,55 @@ async def _slow_chunk_tail(src_wav: Path, out_wav: Path) -> bool:
     return True
 
 
-async def _polish_chunk_pcm(pcm: bytes, work_dir: Path, idx: int) -> Tuple[bytes, str]:
+async def _process_chunk_audio(pcm: bytes, work_dir: Path, idx: int) -> Tuple[Path, str]:
     """
-    Per-chunk voice polish (runs right after each TTS chunk, sequentially, with
-    every temp file deleted immediately): tail-pace fix -> energy polish.
-    Returns (polished_pcm, short_note). On ANY failure returns the ORIGINAL pcm
-    untouched (a polish problem must never lose or break a chunk).
+    Turn one raw TTS chunk into its final clean WAV (file on disk, so RAM stays
+    low): cap over-long pauses (never delete speech) -> fix a rushed tail ->
+    energy polish. Every step falls back to the previous step's audio on
+    failure, so a processing problem can never lose or damage a chunk.
+    Returns (final_wav_path, short_note). Temp files are deleted immediately.
     """
-    if not TTS_POLISH_ENABLED:
-        return pcm, "polish disabled"
     work_dir.mkdir(parents=True, exist_ok=True)
-    raw = work_dir / f"chunk_{idx}_raw.wav"
-    tail = work_dir / f"chunk_{idx}_tail.wav"
-    out = work_dir / f"chunk_{idx}_polished.wav"
+    raw = work_dir / f"c{idx}_raw.wav"
+    capped = work_dir / f"c{idx}_cap.wav"
+    tail = work_dir / f"c{idx}_tail.wav"
+    final = work_dir / f"c{idx}_final.wav"
     notes: List[str] = []
+    write_wav_from_pcm(pcm, raw)
+    src = raw
     try:
-        write_wav_from_pcm(pcm, raw)
-        src = raw
-        try:
-            if await _slow_chunk_tail(raw, tail):
-                src = tail
-                notes.append(f"tail slowed x{TTS_TAIL_SLOWDOWN:.2f}")
-        except Exception as exc:  # noqa: BLE001
-            notes.append(f"tail-fix skipped ({type(exc).__name__})")
-        await _run([
-            FFMPEG_BIN, "-y", "-i", str(src),
-            "-filter:a", TTS_ENERGY_POLISH_FILTER,
-            "-ar", str(TTS_SAMPLE_RATE), "-ac", str(TTS_CHANNELS),
-            "-c:a", "pcm_s16le", str(out),
-        ])
-        with wave.open(str(out), "rb") as wf:
-            polished = wf.readframes(wf.getnframes())
-        if len(polished) < 2000:  # sanity: an empty/garbage result -> keep original
-            return pcm, "polish result too short, kept original"
-        notes.append("energy polish")
-        return polished, ", ".join(notes)
+        before, after = await trim_internal_silences(src, capped)
+        if abs(before - after) > 0.05:
+            notes.append(f"pauses capped (-{before - after:.1f}s)")
+        src = capped
     except Exception as exc:  # noqa: BLE001
-        return pcm, f"polish failed ({type(exc).__name__}: {exc}) — kept original"
-    finally:
-        for f in (raw, tail, out):
-            try:
-                f.unlink(missing_ok=True)
-            except OSError:
-                pass
+        notes.append(f"pause-cap skipped ({type(exc).__name__})")
+    try:
+        if await _slow_chunk_tail(src, tail):
+            src = tail
+            notes.append(f"tail eased x{TTS_TAIL_SLOWDOWN:.2f}")
+    except Exception as exc:  # noqa: BLE001
+        notes.append(f"tail-fix skipped ({type(exc).__name__})")
+    if TTS_POLISH_ENABLED:
+        try:
+            await _run([
+                FFMPEG_BIN, "-y", "-i", str(src), "-filter:a", TTS_ENERGY_POLISH_FILTER,
+                "-ar", str(TTS_SAMPLE_RATE), "-ac", str(TTS_CHANNELS),
+                "-c:a", "pcm_s16le", str(final),
+            ])
+            if await probe_duration(final) > 0.2:
+                notes.append("energy polish")
+                src = final
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"polish skipped ({type(exc).__name__})")
+    if src != final:
+        shutil.copyfile(src, final)
+    for f in (raw, capped, tail):
+        try:
+            f.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return final, ", ".join(notes) or "no changes"
 
 
 def write_wav_from_pcm(pcm_bytes: bytes, out_wav: Path) -> None:
@@ -2262,96 +2432,279 @@ def _gemini_tts_call(model_name: str, api_key: str, voice_name: str, spoken_text
     raise RuntimeError(f"{model_name} returned no audio data.")
 
 
-async def gemini_tts_with_fallback(
-    text: str,
+async def _tts_one_chunk(
+    chunk_text: str,
+    idx: int,
+    total: int,
     voice_name: str,
-    out_wav: Path,
-    style_hint: str = "",
-    models: Optional[List[str]] = None,
+    style_hint: str,
+    model_chain: List[str],
 ) -> AsyncGenerator[dict, None]:
-    text = (text or "").strip()
-    if not text:
-        raise RuntimeError("Nothing to voice — the translated script is empty.")
-
+    """
+    Voice ONE chunk with the strict sequential failover chain (primary model x
+    key first; on any error/timeout the very next key, then the next model —
+    one request in flight at a time). Yields log dicts; the final item is
+    {"_pcm": bytes, "_model": name}.
+    """
     if not GEMINI_API_KEYS:
         raise RuntimeError("No GEMINI_API_KEY(s) configured.")
-
     voice_name = voice_name if voice_name in GEMINI_VOICE_NAMES else "Kore"
-    model_chain = [m for m in (models or TTS_MODELS) if m in TTS_MODEL_CATALOG] or list(TTS_MODELS)
-
-    lines = [l for l in text.split("\n") if l.strip()] or [text]
-    chunks = _chunk_text_by_budget(lines, TTS_CHUNK_CHAR_BUDGET) or [text]
-
-    yield sse_log(
-        f"[INFO] Script split into {len(chunks)} sequential TTS chunk(s) "
-        f"(<= {TTS_CHUNK_CHAR_BUDGET} chars each) — generating one at a time, "
-        "sequential model/key failover per chunk (no simultaneous requests). "
-        f"Locked {TTS_CHUNK_SILENCE_PAD_MS}ms silence pad between chunks..."
-    )
-
-    pcm_total = bytearray()
-    models_used: List[str] = []
-    pad_bytes = _silence_pcm(TTS_CHUNK_SILENCE_PAD_MS)
-
-    for idx, chunk_text in enumerate(chunks, start=1):
-        spoken = f"{style_hint.strip()}: {chunk_text}" if style_hint.strip() else chunk_text
-        pcm: Optional[bytes] = None
-        last_err: Optional[Exception] = None
-
-        for model_name in model_chain:
-            for key_idx, api_key in enumerate(GEMINI_API_KEYS):
-                try:
-                    pcm = await asyncio.wait_for(
-                        asyncio.to_thread(_gemini_tts_call, model_name, api_key, voice_name, spoken),
-                        timeout=TTS_CALL_TIMEOUT_SECONDS,
-                    )
-                    break
-                except asyncio.TimeoutError:
-                    last_err = RuntimeError(f"timed out after {TTS_CALL_TIMEOUT_SECONDS}s")
-                    yield sse_log(
-                        f"[WARN] Chunk {idx}/{len(chunks)}: model '{model_name}' "
-                        f"key #{key_idx + 1}/{len(GEMINI_API_KEYS)} timed out — "
-                        "failing over to the next key immediately."
-                    )
-                    continue
-                except Exception as exc:  # noqa: BLE001
-                    last_err = exc
-                    yield sse_log(
-                        f"[WARN] Chunk {idx}/{len(chunks)}: model '{model_name}' "
-                        f"key #{key_idx + 1}/{len(GEMINI_API_KEYS)} failed "
-                        f"({type(exc).__name__}: {exc}) — failing over to the "
-                        "next key immediately."
-                    )
-                    continue
-            if pcm is not None:
-                models_used.append(model_name)
-                yield sse_log(f"[SUCCESS] Chunk {idx}/{len(chunks)} voiced via '{model_name}'.")
+    spoken = f"{style_hint.strip()}: {chunk_text}" if style_hint.strip() else chunk_text
+    pcm: Optional[bytes] = None
+    used: Optional[str] = None
+    last_err: Optional[Exception] = None
+    for model_name in model_chain:
+        for key_idx, api_key in enumerate(GEMINI_API_KEYS):
+            try:
+                pcm = await asyncio.wait_for(
+                    asyncio.to_thread(_gemini_tts_call, model_name, api_key, voice_name, spoken),
+                    timeout=TTS_CALL_TIMEOUT_SECONDS,
+                )
                 break
-            yield sse_log(
-                f"[WARN] Chunk {idx}/{len(chunks)}: all {len(GEMINI_API_KEYS)} "
-                f"key(s) failed for '{model_name}' — switching to the next "
-                "model immediately."
+            except asyncio.TimeoutError:
+                last_err = RuntimeError(f"timed out after {TTS_CALL_TIMEOUT_SECONDS}s")
+                yield sse_log(
+                    f"[WARN] Chunk {idx}/{total}: model '{model_name}' key "
+                    f"#{key_idx + 1}/{len(GEMINI_API_KEYS)} timed out — next key immediately."
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                yield sse_log(
+                    f"[WARN] Chunk {idx}/{total}: model '{model_name}' key "
+                    f"#{key_idx + 1}/{len(GEMINI_API_KEYS)} failed "
+                    f"({type(exc).__name__}: {exc}) — next key immediately."
+                )
+        if pcm is not None:
+            used = model_name
+            break
+        yield sse_log(
+            f"[WARN] Chunk {idx}/{total}: all {len(GEMINI_API_KEYS)} key(s) failed for "
+            f"'{model_name}' — switching to the next model."
+        )
+    if pcm is None:
+        raise RuntimeError(
+            f"Chunk {idx}/{total} failed on all {len(model_chain)} model(s) x "
+            f"{len(GEMINI_API_KEYS)} key(s). Last error: {last_err}"
+        ) from last_err
+    yield {"_pcm": pcm, "_model": used}
+
+
+async def _llm_json_text(system_prompt: str, user_payload: str) -> Optional[str]:
+    """One JSON-answering LLM call using whatever is configured: Gemini chain
+    first (every model x key, sequential), then the Groq chain. Returns the raw
+    text, or None if nothing answered."""
+    def _gem(model_name: str, api_key: str) -> str:
+        return get_client(api_key).models.generate_content(
+            model=model_name, contents=[system_prompt, user_payload]
+        ).text
+
+    def _groq(model_name: str, api_key: str) -> str:
+        client = get_groq_client(api_key)
+        try:
+            r = client.chat.completions.create(
+                model=model_name, temperature=0.2,
+                messages=[{"role": "system", "content": system_prompt},
+                          {"role": "user", "content": user_payload}],
+                response_format={"type": "json_object"},
             )
+        except Exception:  # noqa: BLE001
+            r = client.chat.completions.create(
+                model=model_name, temperature=0.2,
+                messages=[{"role": "system", "content": system_prompt},
+                          {"role": "user", "content": user_payload}],
+            )
+        return r.choices[0].message.content
 
-        if pcm is None:
-            raise RuntimeError(
-                f"Chunk {idx}/{len(chunks)} failed on all {len(model_chain)} "
-                f"selected model(s) x {len(GEMINI_API_KEYS)} configured key(s). "
-                f"Last error: {last_err}"
-            ) from last_err
+    for model_name in GEMINI_TRANSLATE_MODELS:
+        for key in GEMINI_API_KEYS:
+            try:
+                return await asyncio.to_thread(_gem, model_name, key)
+            except Exception:  # noqa: BLE001
+                continue
+    for model_name in TRANSLATION_MODELS:
+        for key in GROQ_API_KEYS:
+            try:
+                return await asyncio.to_thread(_groq, model_name, key)
+            except Exception:  # noqa: BLE001
+                continue
+    return None
 
-        # Per-chunk voice polish (tail-pace fix + consistent energy) BEFORE the
-        # chunk is stitched to the others.
-        pcm, polish_note = await _polish_chunk_pcm(pcm, out_wav.parent / "polish", idx)
-        yield sse_log(f"[INFO] Chunk {idx}/{len(chunks)} voice polish: {polish_note}.")
 
-        if idx > 1:
-            pcm_total.extend(pad_bytes)
-        pcm_total.extend(pcm)
+async def _condense_lines(lines: List[str], ratio: float, target_language: str) -> Optional[List[str]]:
+    """
+    Ask the LLM to make each line SHORTER (same meaning, tighter wording) so its
+    voice fits the video window — the professional first remedy instead of
+    speeding the voice up. `ratio` < 1 is the target length relative to now.
+    Strict 1:1: returns None (caller keeps the original) unless every line comes
+    back non-empty and the total is genuinely shorter.
+    """
+    payload = [{"i": i, "text": t, "max_chars": max(6, int(len(t) * ratio))} for i, t in enumerate(lines)]
+    system_prompt = (
+        f"You are a dubbing script editor. Each item is a {target_language} line "
+        "that is TOO LONG to be spoken in its time slot. Rewrite EVERY line "
+        "shorter — same meaning, natural spoken "
+        f"{target_language}, tighter wording (drop filler, use shorter "
+        "phrasing) — so that each line is at or under its 'max_chars'. Keep it "
+        "a complete, natural sentence; never cut mid-thought; never merge, split, "
+        "reorder or drop lines. The output array MUST have exactly the same "
+        "number of items, same order.\n"
+        'Respond with ONLY raw JSON: {"lines": [{"i": 0, "text": "<shorter line>"}]}'
+    )
+    raw = await _llm_json_text(system_prompt, json.dumps({"lines": payload}, ensure_ascii=False))
+    if not raw:
+        return None
+    try:
+        data = _extract_json(raw)
+        items = data.get("lines", [])
+        by_i = {int(it["i"]): str(it["text"]).strip() for it in items if isinstance(it, dict)}
+        out = [by_i.get(i, "") for i in range(len(lines))]
+    except Exception:  # noqa: BLE001
+        return None
+    if any(not t for t in out):
+        return None
+    if sum(len(t) for t in out) >= sum(len(t) for t in lines) * 0.98:
+        return None
+    return out
 
-    write_wav_from_pcm(bytes(pcm_total), out_wav)
-    unique_models = list(dict.fromkeys(models_used))
-    yield {"_tts_result": ", ".join(unique_models), "_chunk_count": len(chunks)}
+
+def _plan_tts_chunks(segments: List[Segment], video_duration: float) -> List[dict]:
+    """
+    Group consecutive script lines into voice chunks (<= TTS_CHUNK_CHAR_BUDGET
+    characters AND <= TTS_CHUNK_MAX_SOURCE_SECONDS of source video), breaking
+    ONLY on line boundaries. Each chunk keeps the video timestamp where its
+    first line begins — that is where its voice will be placed. If the
+    transcript has no usable timestamps, starts are spread proportionally by
+    text length across the video.
+    """
+    lines = [(i, sg.text.strip(), float(sg.start), float(sg.end)) for i, sg in enumerate(segments) if sg.text.strip()]
+    if not lines:
+        return []
+    usable = sum(1 for (_, _, a, b) in lines if b > a)
+    timed = usable >= max(2, len(lines) // 2) and video_duration > 0
+    if not timed:
+        total_chars = sum(len(t) for _, t, _, _ in lines) or 1
+        acc = 0
+        fixed = []
+        for (i, t, _, _) in lines:
+            st = (acc / total_chars) * max(video_duration, 1.0)
+            acc += len(t)
+            fixed.append((i, t, st, (acc / total_chars) * max(video_duration, 1.0)))
+        lines = fixed
+    # monotonic starts, clamped inside the video
+    last = 0.0
+    mono = []
+    for (i, t, a, b) in lines:
+        a = max(a, last)
+        if video_duration > 0:
+            a = min(a, max(0.0, video_duration - 1.0))
+        b = max(b, a)
+        mono.append((i, t, a, b))
+        last = a
+    lines = mono
+
+    chunks: List[dict] = []
+    cur: List[Tuple[int, str, float, float]] = []
+    cur_chars = 0
+    for ln in lines:
+        _, t, a, b = ln
+        over_chars = cur and (cur_chars + len(t) + 1 > TTS_CHUNK_CHAR_BUDGET)
+        over_span = cur and (b - cur[0][2] > TTS_CHUNK_MAX_SOURCE_SECONDS)
+        if over_chars or over_span:
+            chunks.append({"lines": cur})
+            cur, cur_chars = [], 0
+        cur.append(ln)
+        cur_chars += len(t) + 1
+    if cur:
+        chunks.append({"lines": cur})
+    for ch in chunks:
+        ch["start"] = ch["lines"][0][2]
+        ch["seg_idx"] = [x[0] for x in ch["lines"]]
+        ch["texts"] = [x[1] for x in ch["lines"]]
+    return chunks
+
+
+class _TimelineWriter:
+    """Streams the final voice track straight to a WAV file: silence up to a
+    chunk's start time, then the chunk's audio. Constant, tiny RAM use."""
+
+    def __init__(self, path: Path) -> None:
+        self.wf = wave.open(str(path), "wb")
+        self.wf.setnchannels(TTS_CHANNELS)
+        self.wf.setsampwidth(TTS_SAMPLE_WIDTH)
+        self.wf.setframerate(TTS_SAMPLE_RATE)
+        self.samples = 0
+
+    @property
+    def seconds(self) -> float:
+        return self.samples / float(TTS_SAMPLE_RATE)
+
+    def pad_to(self, t: float) -> None:
+        need = int(t * TTS_SAMPLE_RATE) - self.samples
+        block = b"\x00" * (TTS_SAMPLE_WIDTH * TTS_CHANNELS * 24000)
+        while need > 0:
+            n = min(need, 24000)
+            self.wf.writeframes(block[: n * TTS_SAMPLE_WIDTH * TTS_CHANNELS])
+            self.samples += n
+            need -= n
+
+    def append_wav(self, path: Path) -> None:
+        with wave.open(str(path), "rb") as r:
+            while True:
+                frames = r.readframes(65536)
+                if not frames:
+                    break
+                self.wf.writeframes(frames)
+                self.samples += len(frames) // (TTS_SAMPLE_WIDTH * TTS_CHANNELS)
+
+    def close(self) -> None:
+        self.wf.close()
+
+
+async def _render_chunk(
+    sess: "Session", text: str, idx: int, total: int, work_dir: Path,
+    model_chain: List[str], rates: List[float],
+) -> AsyncGenerator[dict, None]:
+    """
+    Voice + clean one chunk. Includes a COMPLETENESS guard: if the voice is far
+    shorter than the text needs (the TTS model skipped sentences), the chunk is
+    regenerated once. Final item: {"_wav", "_dur", "_model", "_note"}.
+    """
+    style = _tts_style_hint(sess.target_language)
+    truncated_retry = 0
+    while True:
+        pcm: Optional[bytes] = None
+        model: Optional[str] = None
+        for attempt in range(1 + SELF_HEAL_RETRIES):
+            try:
+                async for ev in _tts_one_chunk(text, idx, total, sess.single_voice, style, model_chain):
+                    if "_pcm" in ev:
+                        pcm, model = ev["_pcm"], ev["_model"]
+                    else:
+                        yield ev
+                break
+            except Exception as exc:  # noqa: BLE001
+                if attempt < SELF_HEAL_RETRIES:
+                    yield sse_log(f"[WARN] Chunk {idx}/{total} voice failed ({exc}) — retrying in "
+                                  f"{SELF_HEAL_BACKOFF_SECONDS:.0f}s...")
+                    await asyncio.sleep(SELF_HEAL_BACKOFF_SECONDS)
+                else:
+                    raise
+        raw_dur = len(pcm) / float(TTS_SAMPLE_RATE * TTS_SAMPLE_WIDTH * TTS_CHANNELS)
+        ref_cps = statistics.median(rates) if rates else _target_cps(sess.target_language) * 1.3
+        expected = len(text) / max(ref_cps, 1.0)
+        if raw_dur < TTS_TRUNCATION_RATIO * expected and truncated_retry < 1:
+            truncated_retry += 1
+            yield sse_log(
+                f"[WARN] Chunk {idx}/{total}: voice is only {raw_dur:.1f}s but this text needs "
+                f"about {expected:.1f}s — the model probably skipped part of it. Regenerating once."
+            )
+            continue
+        if raw_dur >= TTS_TRUNCATION_RATIO * expected:
+            rates.append(len(text) / max(raw_dur, 0.2))
+        break
+    final_wav, note = await _process_chunk_audio(pcm, work_dir, idx)
+    dur = await probe_duration(final_wav)
+    yield {"_wav": final_wav, "_dur": dur, "_model": model, "_note": note}
 
 
 # --------------------------------------------------------------------------- #
@@ -2366,59 +2719,6 @@ async def save_upload_streaming(upload: UploadFile, dest: Path) -> None:
                 break
             await out.write(chunk)
     await upload.close()
-
-
-# --------------------------------------------------------------------------- #
-# Adaptive silence-trim ladder
-# --------------------------------------------------------------------------- #
-
-async def _adaptive_silence_trim(
-    raw_path: Path, video_duration: float, seg_dir: Path,
-) -> Tuple[Path, float, int, List[dict]]:
-    logs: List[dict] = []
-    raw_dur = await probe_duration(raw_path)
-
-    best: Optional[Tuple[int, Path, float]] = None
-    for ms in SILENCE_TRIM_LADDER_MS:
-        candidate = seg_dir / f"trim_{ms}ms.wav"
-        try:
-            await trim_internal_silences(raw_path, candidate, ms / 1000.0)
-            dur = await probe_duration(candidate)
-        except Exception as exc:  # noqa: BLE001
-            logs.append(sse_log(f"[WARN] Silence-trim @ {ms}ms failed ({exc}); skipping this rung."))
-            continue
-
-        logs.append(sse_log(
-            f"[INFO] Silence-trim @ {ms}ms -> {dur:.2f}s of speech "
-            f"(video is {video_duration:.2f}s)."
-        ))
-
-        if best is not None:
-            try:
-                best[1].unlink(missing_ok=True)
-            except OSError:
-                pass
-        best = (ms, candidate, dur)
-
-        comfortable = video_duration <= 0 or dur <= video_duration * COMFORTABLE_MAX_RATIO
-        if comfortable:
-            break
-
-    if best is None:
-        logs.append(sse_log("[WARN] All silence-trim attempts failed; using the untrimmed voice track."))
-        return raw_path, raw_dur, 0, logs
-
-    best_ms, best_path, best_dur = best
-    if best_ms == SILENCE_TRIM_FLOOR_MS and (video_duration > 0 and best_dur > video_duration * COMFORTABLE_MAX_RATIO):
-        logs.append(sse_log(
-            f"[WARN] Even at the locked {SILENCE_TRIM_FLOOR_MS}ms floor, speech "
-            f"({best_dur:.2f}s) is still longer than a comfortable speed-up "
-            f"would allow for a {video_duration:.2f}s video — the remaining "
-            f"gap will be closed by the locked {ATEMPO_LOCK_MIN:.2f}x-"
-            f"{ATEMPO_LOCK_MAX:.2f}x speed-up."
-        ))
-
-    return best_path, best_dur, best_ms, logs
 
 
 # --------------------------------------------------------------------------- #
@@ -2447,114 +2747,156 @@ def _tts_style_hint(target_language: str) -> str:
     return base
 
 
+def _live_progress(sess: "Session", pct: int, msg: str) -> None:
+    """Update the polled progress immediately (used from inside long steps that
+    are not generators, e.g. per-chunk translation)."""
+    sess.job_percent = max(0, min(100, int(pct)))
+    sess.job_message = msg
+    _append_job_log(sess, f"[PROGRESS {sess.job_percent}%] {msg}")
+    if sess.dir.exists():
+        save_session(sess)
+
+
 async def synthesize_single_track(sess: Session) -> AsyncGenerator[dict, None]:
     seg_dir = sess.dir / "segments"
+    work_dir = seg_dir / "work"
     seg_dir.mkdir(exist_ok=True)
 
-    use_rb = False
-    yield sse_log("[INFO] Time-stretch engine: atempo (FFmpeg native — chosen for clean speech).")
-
-    script_text = "\n".join(s.text.strip() for s in sess.segments if s.text.strip())
-    if not script_text:
+    plan = _plan_tts_chunks(sess.segments, sess.video_duration)
+    if not plan:
         raise RuntimeError("Nothing to voice — the translated script came back empty.")
-
-    yield sse_progress(58, "Generating voice (chunked, sequential failover)")
-    yield sse_log(
-        f"[INFO] Sending the script to Gemini TTS in sequential, "
-        f"<= {TTS_CHUNK_CHAR_BUDGET}-character chunks ({len(script_text)} total "
-        f"chars, {len(sess.segments)} line(s)) — never one giant request, "
-        "never several keys/models fired at once. Each chunk fails over to "
-        "the next model/key immediately on error, and a locked "
-        f"{TTS_CHUNK_SILENCE_PAD_MS}ms silence pad is inserted between "
-        "chunks to keep every splice inaudible..."
-    )
-
-    raw_audio = seg_dir / "raw.wav"
-    model_used: Optional[str] = None
-    chunk_count_used = 0
+    total = len(plan)
+    vdur = sess.video_duration
     tts_chain = sess.tts_models or list(TTS_MODELS)
+    total_chars = sum(len(t) for ch in plan for t in ch["texts"])
+
+    yield sse_log(
+        f"[INFO] Voice plan: {total} chunk(s), {total_chars} characters, "
+        f"{len(sess.segments)} line(s), video {vdur:.1f}s. Each chunk is voiced on its "
+        "own and placed at its original video time (no drift, no global speed-up)."
+    )
     yield sse_log(f"[INFO] Voice model fallback chain: {', '.join(tts_chain)}")
 
-    last_tts_err: Optional[Exception] = None
-    for tts_attempt in range(1 + SELF_HEAL_RETRIES):
-        try:
-            async for ev in gemini_tts_with_fallback(
-                text=script_text,
-                voice_name=sess.single_voice,
-                out_wav=raw_audio,
-                style_hint=_tts_style_hint(sess.target_language),
-                models=tts_chain,
-            ):
-                if "_tts_result" in ev:
-                    model_used = ev["_tts_result"]
-                    chunk_count_used = ev.get("_chunk_count", chunk_count_used)
-                else:
-                    yield ev
-            break
-        except Exception as exc:  # noqa: BLE001
-            last_tts_err = exc
-            if tts_attempt < SELF_HEAL_RETRIES:
+    timeline_path = seg_dir / "timeline.wav"
+    writer = _TimelineWriter(timeline_path)
+    rates: List[float] = []
+    models_used: List[str] = []
+    max_stretch = 1.0
+    condensed_chunks = 0
+    overflow_chunks = 0
+
+    try:
+        for n, ch in enumerate(plan):
+            idx = n + 1
+            yield sse_progress(50 + int(42 * n / total), f"Voicing chunk {idx}/{total}")
+
+            next_start = plan[n + 1]["start"] if n + 1 < total else (vdur if vdur > 0 else None)
+            start_actual = max(ch["start"], writer.seconds + (MIN_CHUNK_GAP_SECONDS if n > 0 else 0.0))
+            window = (next_start - start_actual) if next_start is not None else 1e9
+            tight = window < 1.0          # already pushed past its slot by earlier overflow
+            texts = list(ch["texts"])
+            result: Optional[dict] = None
+            r = 0.0
+
+            for attempt in range(1 + CONDENSE_ATTEMPTS):
+                result = None
+                async for ev in _render_chunk(sess, "\n".join(texts), idx, total, work_dir, tts_chain, rates):
+                    if "_wav" in ev:
+                        result = ev
+                    else:
+                        yield ev
+                dur = result["_dur"]
+                r = dur / window if not tight else 0.0
+                if tight or r <= FIT_SPEED_SOFT_MAX or attempt >= CONDENSE_ATTEMPTS:
+                    break
+                target = min(0.95, (window * FIT_SPEED_SOFT_MAX * 0.97) / dur)
                 yield sse_log(
-                    f"[WARN] Voice generation failed ({exc}) — self-healing: "
-                    f"retrying the full chunked run in {SELF_HEAL_BACKOFF_SECONDS:.0f}s..."
+                    f"[INFO] Chunk {idx}/{total}: voice {dur:.1f}s > window {window:.1f}s "
+                    f"(x{dur / window:.2f}) — asking the editor to tighten the wording "
+                    f"(attempt {attempt + 1}/{CONDENSE_ATTEMPTS}) instead of speeding up."
                 )
-                await asyncio.sleep(SELF_HEAL_BACKOFF_SECONDS)
+                shorter = await _condense_lines(texts, target, sess.target_language)
+                if shorter is None:
+                    yield sse_log(f"[WARN] Chunk {idx}/{total}: could not shorten the wording safely — "
+                                  "keeping the original text.")
+                    break
+                try:
+                    result["_wav"].unlink(missing_ok=True)
+                except OSError:
+                    pass
+                texts = shorter
+                condensed_chunks += 1 if attempt == 0 else 0
+                for k, seg_i in enumerate(ch["seg_idx"]):
+                    sess.segments[seg_i].text = texts[k]
+
+            models_used.append(result["_model"])
+            wav: Path = result["_wav"]
+            dur = result["_dur"]
+
+            # Small, last-resort speed-up — never above FIT_SPEED_HARD_MAX, and none at all
+            # when the chunk already fits (no forced speed-up).
+            final_dur = dur
+            if not tight and r > 1.02:
+                ratio = min(r, FIT_SPEED_HARD_MAX)
+                fitted = work_dir / f"c{idx}_fit.wav"
+                await _encode_wav(["-i", str(wav)], fitted, _atempo_chain(ratio))
+                try:
+                    wav.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                wav = fitted
+                final_dur = await probe_duration(wav)
+                max_stretch = max(max_stretch, ratio)
+                speed_note = f"sped up x{ratio:.2f}"
             else:
-                raise
-    yield sse_log(
-        f"[SUCCESS] Voice generated via {model_used} across {chunk_count_used} "
-        "sequential chunk(s)."
-    )
+                speed_note = "natural speed"
 
-    yield sse_progress(70, "Trimming long silences")
-    trimmed_path, trimmed_dur, ms_used, trim_logs = await _adaptive_silence_trim(
-        raw_audio, sess.video_duration, seg_dir
-    )
-    for lg in trim_logs:
-        yield lg
-    yield sse_log(
-        f"[INFO] Final silence-trim window: {ms_used}ms -> {trimmed_dur:.2f}s of "
-        f"speech (video is {sess.video_duration:.2f}s)."
-    )
+            writer.pad_to(start_actual)
+            writer.append_wav(wav)
+            try:
+                wav.unlink(missing_ok=True)
+            except OSError:
+                pass
 
-    yield sse_progress(80, "Matching audio to video duration")
-    raw_ratio = (trimmed_dur / sess.video_duration) if sess.video_duration > 0 else 1.0
+            over = (next_start is not None) and (start_actual + final_dur > next_start + 0.05)
+            if over:
+                overflow_chunks += 1
+            yield sse_log(
+                f"[SUCCESS] Chunk {idx}/{total} placed at {start_actual:.1f}s: voice {final_dur:.1f}s "
+                f"in a {min(window, 9999):.1f}s window, {speed_note} ({result['_note']})"
+                + (" — runs slightly into the next window (nothing is cut)." if over else ".")
+            )
 
-    fitted_path = seg_dir / "fitted.wav"
-    applied_speed_ratio = round(max(ATEMPO_LOCK_MIN, min(ATEMPO_LOCK_MAX, raw_ratio)), 2)
-    yield sse_log(
-        f"[INFO] Natural fit would need {raw_ratio:.3f}x — locking applied "
-        f"speed to {applied_speed_ratio:.2f}x (product rule: always between "
-        f"{ATEMPO_LOCK_MIN:.2f}x-{ATEMPO_LOCK_MAX:.2f}x, pitch preserved via atempo)."
-    )
-    if raw_ratio < ATEMPO_LOCK_MIN:
-        yield sse_log(
-            f"[INFO] Speech was shorter/slower than the {ATEMPO_LOCK_MIN:.2f}x "
-            "floor requires — speeding it up anyway to stay within the "
-            "locked band; any leftover time is trailing silence, not lost audio."
-        )
-    elif raw_ratio > ATEMPO_LOCK_MAX:
-        yield sse_log(
-            f"[WARN] Speech needed more than {ATEMPO_LOCK_MAX:.2f}x to fully "
-            "match the video length; capped at the locked ceiling instead, so "
-            "the dubbed audio may run slightly long relative to the video."
-        )
-    await _encode_wav(
-        ["-i", str(trimmed_path)], fitted_path, _speed_filter(applied_speed_ratio, use_rb)
-    )
+        if vdur > 0:
+            writer.pad_to(vdur)
+    finally:
+        writer.close()
+        shutil.rmtree(work_dir, ignore_errors=True)
 
+    model_used = ", ".join(dict.fromkeys(models_used))
+    yield sse_log(f"[SUCCESS] Voice generated via {model_used} across {total} chunk(s); "
+                  f"{condensed_chunks} chunk(s) needed tighter wording.")
+
+    yield sse_progress(93, "Finishing voice track (loudness)")
+    fitted_path = seg_dir / "final_voice.wav"
+    await _encode_wav(["-i", str(timeline_path)], fitted_path, TTS_LOUDNESS_NORMALIZE_FILTER)
+    try:
+        timeline_path.unlink(missing_ok=True)
+    except OSError:
+        pass
     fitted_dur = await probe_duration(fitted_path)
-    yield sse_log(f"[SUCCESS] Final dubbed audio: {fitted_dur:.2f}s (target {sess.video_duration:.2f}s).")
+    yield sse_log(f"[SUCCESS] Final dubbed audio: {fitted_dur:.2f}s (video {vdur:.2f}s).")
+    if vdur > 0 and fitted_dur > vdur + 0.3:
+        yield sse_log(
+            f"[WARN] The voice is {fitted_dur - vdur:.1f}s longer than the video. Nothing was cut; "
+            "to avoid this, use a shorter/more concise target language or split the video."
+        )
 
-    yield sse_progress(94, "Muxing dubbed audio into video")
+    yield sse_progress(95, "Muxing dubbed audio into video")
     yield sse_log("[INFO] Merging dubbed audio with the original video (video stream copied, zero quality loss)...")
     out_video = sess.dir / "dubbed_output.mp4"
     await mux_video_with_audio(sess.video_path, fitted_path, out_video)
 
-    # Free scratch segment files immediately (disk hygiene); the caller
-    # (_process_job) additionally removes the source video and any other
-    # leftover files once this generator finishes and the final MP4 is
-    # confirmed on disk.
     shutil.rmtree(seg_dir, ignore_errors=True)
     save_session(sess)
 
@@ -2566,8 +2908,10 @@ async def synthesize_single_track(sess: Session) -> AsyncGenerator[dict, None]:
         "source_language": sess.source_language,
         "target_language": sess.target_language,
         "segments": len(sess.segments),
-        "tts_requests": chunk_count_used,
-        "speed_ratio": round(applied_speed_ratio, 4),
+        "tts_requests": total,
+        "speed_ratio": round(max_stretch, 3),
+        "condensed_chunks": condensed_chunks,
+        "overflow_chunks": overflow_chunks,
         "voice_model": model_used,
     })
 
@@ -2680,6 +3024,7 @@ async def run_dub(sess: Session) -> AsyncGenerator[dict, None]:
                 "voice, so none can be silently dropped..."
             )
             async for ev in self_heal("Gemini translation", lambda: gemini_translate_all(
+                progress_cb=lambda d, t: _live_progress(sess, 30 + int(20 * d / t), f"Translating chunk {d}/{t}"),
                 transcript_segments=seg_dicts,
                 source_language=sess.source_language or "Unknown",
                 target_language=sess.target_language,
@@ -2706,6 +3051,7 @@ async def run_dub(sess: Session) -> AsyncGenerator[dict, None]:
             )
             draft_result = None
             async for ev in self_heal("Groq draft translation", lambda: groq_translate_all(
+                progress_cb=lambda d, t: _live_progress(sess, 25 + int(15 * d / t), f"Draft translation chunk {d}/{t}"),
                 transcript_segments=seg_dicts,
                 source_language=sess.source_language or "Unknown",
                 target_language=sess.target_language,
@@ -2737,6 +3083,7 @@ async def run_dub(sess: Session) -> AsyncGenerator[dict, None]:
                 "correct Groq draft for just those lines, never a blank..."
             )
             async for ev in self_heal("Gemini retouch", lambda: gemini_retouch_all(
+                progress_cb=lambda d, t: _live_progress(sess, 40 + int(10 * d / t), f"Retouching chunk {d}/{t}"),
                 draft_segments=draft_result["segments"],
                 raw_source_segments=seg_dicts,
                 source_language=sess.source_language or "Unknown",
@@ -2764,6 +3111,7 @@ async def run_dub(sess: Session) -> AsyncGenerator[dict, None]:
                 "verified 1:1, so none can be silently dropped..."
             )
             async for ev in self_heal("Groq translation", lambda: groq_translate_all(
+                progress_cb=lambda d, t: _live_progress(sess, 30 + int(20 * d / t), f"Translating chunk {d}/{t}"),
                 transcript_segments=seg_dicts,
                 source_language=sess.source_language or "Unknown",
                 target_language=sess.target_language,
@@ -3047,6 +3395,7 @@ async def status(session_id: str, since: int = 0) -> JSONResponse:
         "line_count": len(sess.raw_segments) if sess.raw_segments else 0,
         "target_language": sess.target_language or None,
         "error": sess.job_error,
+        "server_time": time.time(),
     }
     if sess.status == "done":
         payload["download_url"] = f"/download/{session_id}"
