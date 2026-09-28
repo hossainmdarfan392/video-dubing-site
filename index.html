@@ -29,7 +29,6 @@
   --err:#ff6b6b;
 }
 
-/* Rotatable angle for the RGB border */
 @property --rgb-angle{
   syntax:'<angle>';
   initial-value:0deg;
@@ -50,149 +49,82 @@ body{
   line-height:1.5;
 }
 
-/* ============================================================
-   Layout
-   ============================================================ */
 .shell{max-width:1180px;margin:0 auto;padding:34px 26px 70px;}
 
-.topbar{
-  display:flex;align-items:center;justify-content:space-between;
-  gap:18px;margin-bottom:34px;
-}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:34px;}
 .brand{display:flex;align-items:center;gap:14px;}
 .brand-mark{
-  width:46px;height:46px;border-radius:14px;
-  display:grid;place-items:center;
+  width:46px;height:46px;border-radius:14px;display:grid;place-items:center;
   background:linear-gradient(135deg,var(--sky),var(--sky-soft));
-  box-shadow:0 12px 26px -10px rgba(0,162,255,0.65);
-  color:#fff;
+  box-shadow:0 12px 26px -10px rgba(0,162,255,0.65);color:#fff;
 }
 .brand-name{font-size:20px;font-weight:800;letter-spacing:-0.02em;}
 .brand-sub{font-size:12.5px;color:var(--ink-soft);font-weight:500;margin-top:-2px;}
 
 .status-pill{
-  display:inline-flex;align-items:center;gap:9px;
-  padding:9px 15px;border-radius:999px;
-  background:var(--panel-glass);
-  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
-  border:1px solid var(--line);
-  font-size:13px;font-weight:600;color:var(--ink-soft);
-  box-shadow:var(--shadow-sm);
+  display:inline-flex;align-items:center;gap:9px;padding:9px 15px;border-radius:999px;
+  background:var(--panel-glass);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border:1px solid var(--line);font-size:13px;font-weight:600;color:var(--ink-soft);box-shadow:var(--shadow-sm);
 }
 .status-dot{width:9px;height:9px;border-radius:50%;background:var(--sky);box-shadow:0 0 0 4px rgba(0,162,255,0.16);}
 
 .hero{margin-bottom:30px;}
-.hero h1{
-  font-size:clamp(28px,4vw,44px);line-height:1.08;
-  letter-spacing:-0.03em;font-weight:850;margin:0 0 10px;
-}
+.hero h1{font-size:clamp(28px,4vw,44px);line-height:1.08;letter-spacing:-0.03em;font-weight:850;margin:0 0 10px;}
 .hero h1 .grad{
   background:linear-gradient(120deg,var(--sky-deep),var(--sky) 45%,var(--sky-soft));
   -webkit-background-clip:text;background-clip:text;color:transparent;
 }
 .hero p{max-width:640px;color:var(--ink-soft);font-size:15.5px;margin:0;}
 
-/* ============================================================
-   Cards / grid
-   ============================================================ */
-.grid{
-  display:grid;
-  grid-template-columns:1.05fr 0.95fr;
-  gap:24px;align-items:start;
-}
+.grid{display:grid;grid-template-columns:1.05fr 0.95fr;gap:24px;align-items:start;}
 @media (max-width:940px){.grid{grid-template-columns:1fr;}}
 
-.card{
-  background:var(--panel);
-  border:1px solid var(--line);
-  border-radius:var(--radius);
-  box-shadow:var(--shadow);
-  padding:24px;
-}
-.card.glass{
-  background:var(--panel-glass);
-  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
-}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:24px;}
+.card.glass{background:var(--panel-glass);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);}
 .card-title{display:flex;align-items:center;gap:10px;font-weight:750;font-size:15px;margin-bottom:18px;}
 .card-title svg{color:var(--sky);}
 
-/* ============================================================
-   RGB Glow Dropbox
-   ============================================================ */
+/* Dropbox */
 .drop-wrap{position:relative;border-radius:22px;padding:3px;isolation:isolate;}
 .drop-wrap::before{
   content:"";position:absolute;inset:0;border-radius:22px;padding:3px;
-  background:conic-gradient(from var(--rgb-angle),
-     #ff3d81,#ff9d3d,#ffe14d,#4dff8f,#00a2ff,#7c6bff,#ff3d81);
+  background:conic-gradient(from var(--rgb-angle),#ff3d81,#ff9d3d,#ffe14d,#4dff8f,#00a2ff,#7c6bff,#ff3d81);
   -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
-  -webkit-mask-composite:xor;mask-composite:exclude;
-  animation:spin 6s linear infinite;
-  opacity:0.9;transition:opacity .3s ease;
-  z-index:-1;
+  -webkit-mask-composite:xor;mask-composite:exclude;animation:spin 6s linear infinite;
+  opacity:0.9;transition:opacity .3s ease;z-index:-1;
 }
 @keyframes spin{to{--rgb-angle:360deg;}}
-
 .dropbox{
-  position:relative;border-radius:19px;
-  background:#ffffff;
-  padding:40px 26px;text-align:center;cursor:pointer;
+  position:relative;border-radius:19px;background:#ffffff;padding:34px 26px;text-align:center;cursor:pointer;
   transition:background .25s ease,box-shadow .25s ease,transform .12s ease;
-  display:flex;flex-direction:column;align-items:center;gap:12px;
+  display:flex;flex-direction:column;align-items:center;gap:10px;
 }
 .dropbox:hover{transform:translateY(-1px);}
 .drop-icon{
-  width:62px;height:62px;border-radius:50%;
-  display:grid;place-items:center;color:var(--sky);
+  width:56px;height:56px;border-radius:50%;display:grid;place-items:center;color:var(--sky);
   background:radial-gradient(circle at 50% 40%,rgba(0,162,255,0.14),rgba(124,209,255,0.06));
   transition:transform .25s ease,color .25s ease;
 }
-.dropbox h3{margin:2px 0 0;font-size:16.5px;font-weight:750;}
+.dropbox h3{margin:2px 0 0;font-size:16px;font-weight:750;}
 .dropbox p{margin:0;color:var(--ink-soft);font-size:13.5px;}
-.dropbox .hint{font-size:12px;color:#98a7bd;}
-
-/* Deep sky-blue solid glow while dragging */
+.dropbox .hint{font-size:11.5px;color:#98a7bd;}
 .drop-wrap.dragging::before{opacity:0;}
 .drop-wrap.dragging .dropbox{
   background:linear-gradient(180deg,#eaf7ff,#dcf0ff);
   box-shadow:0 0 0 3px var(--sky),0 0 46px -4px rgba(0,162,255,0.85),inset 0 0 40px rgba(0,162,255,0.20);
 }
 .drop-wrap.dragging .drop-icon{transform:scale(1.08);color:var(--sky-deep);}
-.drop-wrap.has-file::before{
-  background:conic-gradient(from var(--rgb-angle),var(--sky),var(--sky-soft),var(--sky-deep),var(--sky));
-}
 
-.file-chip{
-  margin-top:16px;display:none;align-items:center;gap:12px;
-  padding:12px 14px;border-radius:var(--radius-sm);
-  background:#f4fbff;border:1px solid #d5edff;
-  text-align:left;
-}
-.file-chip.show{display:flex;}
-.file-chip .fmeta{min-width:0;flex:1;}
-.file-chip .fname{font-weight:650;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.file-chip .fsize{font-size:12px;color:var(--ink-soft);}
-.file-chip .fico{color:var(--sky);flex-shrink:0;}
-.file-chip .fclear{margin-left:auto;background:none;border:none;cursor:pointer;color:var(--ink-soft);padding:6px;border-radius:8px;display:grid;place-items:center;}
-.file-chip .fclear:hover{background:#e3f3ff;color:var(--err);}
-
-/* ============================================================
-   Form controls
-   ============================================================ */
 .field{margin-bottom:16px;}
 .field label{display:block;font-size:12.5px;font-weight:650;color:var(--ink-soft);margin-bottom:7px;letter-spacing:.01em;}
-.control{
-  position:relative;
-}
+.control{position:relative;}
 .control select,.control input[type="text"],.control input[type="email"]{
-  width:100%;appearance:none;-webkit-appearance:none;
-  padding:12px 40px 12px 14px;border-radius:var(--radius-sm);
-  border:1px solid var(--line);background:#fbfdff;
-  font-size:14.5px;font-family:inherit;color:var(--ink);font-weight:550;
+  width:100%;appearance:none;-webkit-appearance:none;padding:12px 40px 12px 14px;border-radius:var(--radius-sm);
+  border:1px solid var(--line);background:#fbfdff;font-size:14.5px;font-family:inherit;color:var(--ink);font-weight:550;
   transition:border-color .2s ease,box-shadow .2s ease,background .2s ease;
 }
 .control select:focus,.control input[type="text"]:focus,.control input[type="email"]:focus{
-  outline:none;border-color:var(--sky);background:#fff;
-  box-shadow:0 0 0 4px rgba(0,162,255,0.14);
+  outline:none;border-color:var(--sky);background:#fff;box-shadow:0 0 0 4px rgba(0,162,255,0.14);
 }
 .control .chev{position:absolute;right:13px;top:50%;transform:translateY(-50%);color:var(--ink-soft);pointer-events:none;}
 .field-note{margin-top:6px;font-size:11.5px;color:#98a7bd;}
@@ -200,23 +132,9 @@ body{
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
 @media (max-width:480px){.row2{grid-template-columns:1fr;}}
 
-/* Source language badge */
-.src-badge{
-  display:inline-flex;align-items:center;gap:9px;
-  padding:8px 13px;border-radius:999px;font-size:12.5px;font-weight:650;
-  background:#f1f8ff;border:1px solid #d8ecff;color:var(--sky-deep);
-}
-.src-badge svg{flex-shrink:0;}
-.src-badge.detecting{color:var(--ink-soft);background:#f6f8fb;border-color:var(--line);}
-.src-badge .spin-i{animation:rot 1.1s linear infinite;transform-origin:center;}
-@keyframes rot{to{transform:rotate(360deg);}}
-.src-badge.locked{color:#0a8a4a;background:#eefcf3;border-color:#c7f0d7;}
-
-/* Primary button */
 .btn{
-  display:inline-flex;align-items:center;justify-content:center;gap:10px;
-  width:100%;padding:15px 20px;border:none;border-radius:14px;cursor:pointer;
-  font-size:15px;font-weight:750;font-family:inherit;color:#fff;
+  display:inline-flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:15px 20px;
+  border:none;border-radius:14px;cursor:pointer;font-size:15px;font-weight:750;font-family:inherit;color:#fff;
   background:linear-gradient(120deg,var(--sky-deep),var(--sky) 55%,var(--sky-soft));
   box-shadow:0 16px 34px -14px rgba(0,120,204,0.8);
   transition:transform .12s ease,box-shadow .2s ease,filter .2s ease,opacity .2s ease;
@@ -224,123 +142,21 @@ body{
 .btn:hover:not(:disabled){transform:translateY(-2px);filter:brightness(1.03);}
 .btn:active:not(:disabled){transform:translateY(0);}
 .btn:disabled{opacity:.55;cursor:not-allowed;box-shadow:none;}
-.btn.ghost{
-  background:#fff;color:var(--sky-deep);border:1px solid #cfe8ff;box-shadow:none;
-}
-.btn.ghost:hover:not(:disabled){background:#f2f9ff;transform:none;}
+.btn.small{padding:9px 14px;font-size:12.5px;border-radius:10px;width:auto;box-shadow:none;}
 
-.btn-spin{display:none;}
-.btn.loading .btn-spin{display:inline-grid;}
-.btn.loading .btn-label,.btn.loading .btn-ico{display:none;}
-.btn-spin svg{animation:rot .9s linear infinite;}
-
-/* ============================================================
-   Dashboard: progress + console
-   ============================================================ */
-.dash{display:grid;grid-template-columns:1fr;gap:20px;}
-
-.progress-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
-.progress-stage{font-size:13px;font-weight:650;color:var(--ink-soft);display:flex;align-items:center;gap:9px;min-width:0;}
-.progress-stage .st-txt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.progress-pct{font-size:22px;font-weight:850;letter-spacing:-.02em;color:var(--sky-deep);font-variant-numeric:tabular-nums;}
-
-.progress-track{
-  height:14px;border-radius:999px;background:#eaf1f9;overflow:hidden;position:relative;
-  border:1px solid #e0ebf6;
-}
-.progress-fill{
-  height:100%;width:0%;border-radius:999px;
-  background:linear-gradient(90deg,var(--sky-deep),var(--sky) 55%,var(--sky-soft));
-  transition:width .55s cubic-bezier(.22,.61,.36,1);
-  position:relative;overflow:hidden;
-}
-.progress-fill::after{
-  content:"";position:absolute;inset:0;
-  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.55),transparent);
-  transform:translateX(-100%);
-}
-.progress-fill.active::after{animation:sheen 1.6s ease-in-out infinite;}
-@keyframes sheen{to{transform:translateX(100%);}}
-.progress-fill.paused{background:linear-gradient(90deg,#7c6bff,var(--sky));}
-
-.progress-marks{display:flex;justify-content:space-between;margin-top:8px;font-size:10.5px;color:#9fb0c4;font-weight:600;}
-.queue-note{margin-top:8px;font-size:11.5px;color:var(--ink-soft);font-weight:600;display:none;}
-.queue-note.show{display:block;}
-
-/* Console */
-.console{
-  margin-top:6px;background:var(--term-bg);border-radius:14px;overflow:hidden;
-  border:1px solid #0e1a30;box-shadow:inset 0 2px 20px rgba(0,0,0,0.4);
-}
-.console-bar{
-  display:flex;align-items:center;gap:8px;padding:11px 14px;
-  background:#0d1728;border-bottom:1px solid var(--term-line);
-}
-.dotset{display:flex;gap:6px;}
-.dotset i{width:11px;height:11px;border-radius:50%;display:block;}
-.dotset i:nth-child(1){background:#ff5f57;}
-.dotset i:nth-child(2){background:#febc2e;}
-.dotset i:nth-child(3){background:#28c840;}
-.console-title{color:#7d93b3;font-size:12px;font-weight:600;margin-left:6px;font-family:'SFMono-Regular',ui-monospace,Menlo,Consolas,monospace;}
-.console-live{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:11px;color:#4f6party;}
-.console-live span{color:#5f7590;font-size:11px;}
-.live-dot{width:7px;height:7px;border-radius:50%;background:#3a4a63;}
-.live-dot.on{background:var(--ok);box-shadow:0 0 0 3px rgba(47,208,122,0.2);animation:pulse 1.4s ease-in-out infinite;}
-@keyframes pulse{50%{opacity:.4;}}
-
-.console-body{
-  height:270px;overflow-y:auto;padding:14px 16px;
-  font-family:'SFMono-Regular',ui-monospace,Menlo,Consolas,monospace;
-  font-size:12.5px;line-height:1.65;color:#cdd9ea;
-}
-.console-body::-webkit-scrollbar{width:9px;}
-.console-body::-webkit-scrollbar-thumb{background:#22314c;border-radius:9px;}
-.log{display:flex;gap:10px;padding:1px 0;white-space:pre-wrap;word-break:break-word;}
-.log .ts{color:#546a8a;flex-shrink:0;}
-.log .msg{flex:1;}
-.log.l-info .msg{color:#cdd9ea;}
-.log.l-ok .msg{color:var(--ok);}
-.log.l-warn .msg{color:var(--warn);}
-.log.l-err .msg{color:var(--err);}
-.log.l-sys .msg{color:var(--sky-soft);}
-.console-empty{color:#3f5474;font-style:italic;}
-
-/* ============================================================
-   Result panel
-   ============================================================ */
-.result{display:none;margin-top:20px;}
-.result.show{display:block;animation:fadeUp .5s ease;}
-@keyframes fadeUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
-.result video{width:100%;border-radius:14px;background:#000;display:block;box-shadow:var(--shadow-sm);}
-.result-meta{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0;}
-.meta-tag{
-  display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:650;
-  padding:7px 12px;border-radius:999px;background:#f2f9ff;border:1px solid #d8ecff;color:var(--sky-deep);
-}
-.meta-tag svg{color:var(--sky);}
-
-.footer{margin-top:44px;text-align:center;color:#9fb0c4;font-size:12.5px;}
-.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;}
-
-/* ============================================================
-   Engine toggle + TTS model multi-select
-   ============================================================ */
+/* Engine toggle (3-way, Hybrid default) */
 .engine-toggle{
-  display:flex;align-items:center;justify-content:space-between;gap:12px;
-  padding:12px 14px;border-radius:var(--radius-sm);
+  display:flex;flex-direction:column;gap:8px;padding:12px 14px;border-radius:var(--radius-sm);
   background:#fbfdff;border:1px solid var(--line);margin-bottom:16px;
 }
 .engine-toggle .et-label{font-size:12.5px;font-weight:650;color:var(--ink-soft);}
-.et-switch{
-  position:relative;display:inline-flex;background:#eaf1f9;border-radius:999px;
-  padding:3px;gap:2px;
-}
+.et-switch{position:relative;display:inline-flex;background:#eaf1f9;border-radius:999px;padding:3px;gap:2px;width:100%;}
 .et-switch button{
-  border:none;background:transparent;padding:7px 14px;border-radius:999px;
-  font-size:12.5px;font-weight:700;font-family:inherit;color:var(--ink-soft);cursor:pointer;
-  transition:background .2s ease,color .2s ease;
+  flex:1;border:none;background:transparent;padding:8px 8px;border-radius:999px;font-size:12px;font-weight:700;
+  font-family:inherit;color:var(--ink-soft);cursor:pointer;transition:background .2s ease,color .2s ease;white-space:nowrap;
 }
 .et-switch button.active{background:#fff;color:var(--sky-deep);box-shadow:var(--shadow-sm);}
+.engine-note{font-size:11.5px;color:#98a7bd;}
 
 .tts-models{display:flex;flex-direction:column;gap:8px;}
 .tts-model-row{
@@ -356,8 +172,112 @@ body{
 .tts-mode-row input{accent-color:var(--sky);}
 
 /* ============================================================
-   Past Dubs (localStorage history)
+   Jobs list (Multiple Dubbing System)
    ============================================================ */
+.jobs-card{margin-top:0;}
+.jobs-list{display:flex;flex-direction:column;gap:10px;}
+.jobs-empty{color:#98a7bd;font-size:13px;font-style:italic;padding:8px 2px;}
+.job-row{
+  border-radius:var(--radius-sm);border:1px solid var(--line);background:#fbfdff;padding:12px 14px;
+  cursor:pointer;transition:border-color .2s ease,background .2s ease;
+}
+.job-row:hover{border-color:#cfe8ff;}
+.job-row.focused{border-color:var(--sky);background:#f2f9ff;box-shadow:0 0 0 3px rgba(0,162,255,0.10);}
+.job-row .jr-top{display:flex;align-items:center;gap:10px;}
+.job-row .jr-name{font-size:13.5px;font-weight:700;min-width:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.job-row .jr-badge{
+  flex-shrink:0;font-size:10.5px;font-weight:750;padding:3px 9px;border-radius:999px;text-transform:uppercase;letter-spacing:.03em;
+}
+.jr-badge.st-uploading,.jr-badge.st-preparing,.jr-badge.st-dubbing{background:#fff6df;color:#9a7300;}
+.jr-badge.st-ready{background:#eefcf3;color:#0a8a4a;}
+.jr-badge.st-done{background:#eaf3ff;color:var(--sky-deep);}
+.jr-badge.st-error{background:#fdeaea;color:#c23a3a;}
+.job-row .jr-sub{font-size:11.5px;color:var(--ink-soft);margin-top:4px;}
+.job-mini-track{height:6px;border-radius:999px;background:#eaf1f9;overflow:hidden;margin-top:8px;}
+.job-mini-fill{height:100%;background:linear-gradient(90deg,var(--sky-deep),var(--sky));border-radius:999px;transition:width .4s ease;}
+.job-row .jr-actions{display:flex;gap:8px;margin-top:10px;}
+.job-row .jr-del{
+  flex-shrink:0;background:none;border:none;cursor:pointer;color:var(--ink-soft);padding:4px;border-radius:8px;
+}
+.job-row .jr-del:hover{background:#fdeaea;color:var(--err);}
+
+/* Source language badge */
+.src-badge{
+  display:inline-flex;align-items:center;gap:9px;padding:8px 13px;border-radius:999px;font-size:12.5px;font-weight:650;
+  background:#f1f8ff;border:1px solid #d8ecff;color:var(--sky-deep);
+}
+.src-badge.detecting{color:var(--ink-soft);background:#f6f8fb;border-color:var(--line);}
+.src-badge .spin-i{animation:rot 1.1s linear infinite;transform-origin:center;}
+@keyframes rot{to{transform:rotate(360deg);}}
+.src-badge.locked{color:#0a8a4a;background:#eefcf3;border-color:#c7f0d7;}
+
+/* Dashboard */
+.dash{display:grid;grid-template-columns:1fr;gap:20px;}
+.progress-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
+.progress-stage{font-size:13px;font-weight:650;color:var(--ink-soft);display:flex;align-items:center;gap:9px;min-width:0;}
+.progress-stage .st-txt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.progress-pct{font-size:22px;font-weight:850;letter-spacing:-.02em;color:var(--sky-deep);font-variant-numeric:tabular-nums;}
+.progress-track{height:14px;border-radius:999px;background:#eaf1f9;overflow:hidden;position:relative;border:1px solid #e0ebf6;}
+.progress-fill{
+  height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,var(--sky-deep),var(--sky) 55%,var(--sky-soft));
+  transition:width .55s cubic-bezier(.22,.61,.36,1);position:relative;overflow:hidden;
+}
+.progress-fill::after{
+  content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.55),transparent);
+  transform:translateX(-100%);
+}
+.progress-fill.active::after{animation:sheen 1.6s ease-in-out infinite;}
+@keyframes sheen{to{transform:translateX(100%);}}
+.progress-marks{display:flex;justify-content:space-between;margin-top:8px;font-size:10.5px;color:#9fb0c4;font-weight:600;}
+.queue-note{margin-top:8px;font-size:11.5px;color:var(--ink-soft);font-weight:600;display:none;}
+.queue-note.show{display:block;}
+
+/* Console */
+.console{margin-top:6px;background:var(--term-bg);border-radius:14px;overflow:hidden;border:1px solid #0e1a30;box-shadow:inset 0 2px 20px rgba(0,0,0,0.4);}
+.console-bar{display:flex;align-items:center;gap:8px;padding:11px 14px;background:#0d1728;border-bottom:1px solid var(--term-line);}
+.dotset{display:flex;gap:6px;}
+.dotset i{width:11px;height:11px;border-radius:50%;display:block;}
+.dotset i:nth-child(1){background:#ff5f57;}
+.dotset i:nth-child(2){background:#febc2e;}
+.dotset i:nth-child(3){background:#28c840;}
+.console-title{color:#7d93b3;font-size:12px;font-weight:600;margin-left:6px;font-family:'SFMono-Regular',ui-monospace,Menlo,Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.console-live{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:11px;flex-shrink:0;}
+.console-live span{color:#5f7590;font-size:11px;}
+.live-dot{width:7px;height:7px;border-radius:50%;background:#3a4a63;}
+.live-dot.on{background:var(--ok);box-shadow:0 0 0 3px rgba(47,208,122,0.2);animation:pulse 1.4s ease-in-out infinite;}
+@keyframes pulse{50%{opacity:.4;}}
+.console-body{
+  height:250px;overflow-y:auto;padding:14px 16px;font-family:'SFMono-Regular',ui-monospace,Menlo,Consolas,monospace;
+  font-size:12.5px;line-height:1.65;color:#cdd9ea;
+}
+.console-body::-webkit-scrollbar{width:9px;}
+.console-body::-webkit-scrollbar-thumb{background:#22314c;border-radius:9px;}
+.log{display:flex;gap:10px;padding:1px 0;white-space:pre-wrap;word-break:break-word;}
+.log .ts{color:#546a8a;flex-shrink:0;}
+.log .msg{flex:1;}
+.log.l-info .msg{color:#cdd9ea;}
+.log.l-ok .msg{color:var(--ok);}
+.log.l-warn .msg{color:var(--warn);}
+.log.l-err .msg{color:var(--err);}
+.log.l-sys .msg{color:var(--sky-soft);}
+.console-empty{color:#3f5474;font-style:italic;}
+
+/* Result panel */
+.result{display:none;margin-top:20px;}
+.result.show{display:block;animation:fadeUp .5s ease;}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
+.result video{width:100%;border-radius:14px;background:#000;display:block;box-shadow:var(--shadow-sm);}
+.result-meta{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0;}
+.meta-tag{
+  display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:650;padding:7px 12px;border-radius:999px;
+  background:#f2f9ff;border:1px solid #d8ecff;color:var(--sky-deep);
+}
+.meta-tag svg{color:var(--sky);}
+
+.footer{margin-top:44px;text-align:center;color:#9fb0c4;font-size:12.5px;}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;}
+
+/* Past Dubs history */
 .history-card{margin-top:24px;}
 .history-list{display:flex;flex-direction:column;gap:8px;}
 .history-empty{color:#98a7bd;font-size:13px;font-style:italic;padding:6px 2px;}
@@ -369,14 +289,11 @@ body{
 .history-row .hr-title{font-size:13.5px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .history-row .hr-sub{font-size:11.5px;color:var(--ink-soft);margin-top:2px;}
 .history-row a.hr-dl{
-  flex-shrink:0;display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;
-  color:var(--sky-deep);text-decoration:none;padding:7px 11px;border-radius:999px;
-  background:#f2f9ff;border:1px solid #d8ecff;
+  flex-shrink:0;display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;color:var(--sky-deep);
+  text-decoration:none;padding:7px 11px;border-radius:999px;background:#f2f9ff;border:1px solid #d8ecff;
 }
 .history-row a.hr-dl:hover{background:#e3f3ff;}
-.history-row .hr-del{
-  flex-shrink:0;background:none;border:none;cursor:pointer;color:var(--ink-soft);padding:6px;border-radius:8px;
-}
+.history-row .hr-del{flex-shrink:0;background:none;border:none;cursor:pointer;color:var(--ink-soft);padding:6px;border-radius:8px;}
 .history-row .hr-del:hover{background:#fdeaea;color:var(--err);}
 .history-clear{margin-top:10px;background:none;border:none;color:var(--ink-soft);font-size:12px;cursor:pointer;text-decoration:underline;padding:0;}
 </style>
@@ -384,7 +301,6 @@ body{
 <body>
 <div class="shell">
 
-  <!-- ===================== TOP BAR ===================== -->
   <header class="topbar">
     <div class="brand">
       <div class="brand-mark" aria-hidden="true">
@@ -403,13 +319,11 @@ body{
     </div>
   </header>
 
-  <!-- ===================== HERO ===================== -->
   <section class="hero">
     <h1>Dub any video into <span class="grad">any language</span>, flawlessly.</h1>
-    <p>Pick a video — upload &amp; transcription start instantly in the background. Choose a language and voice, then press Generate Dub. You can close this tab; if you leave an email we'll notify you when it's ready, and finished dubs are saved here for later.</p>
+    <p>Upload multiple videos — each runs as its own background job, survives a page refresh or a closed tab, and resumes automatically when you come back. Leave an email and we'll notify you when a dub is ready.</p>
   </section>
 
-  <!-- ===================== MAIN GRID ===================== -->
   <div class="grid">
 
     <!-- LEFT: Upload + Setup -->
@@ -418,48 +332,33 @@ body{
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
         </svg>
-        Source Media
+        Add a Video
       </div>
 
-      <!-- Engine toggle: Gemini <-> Groq -->
+      <!-- Engine toggle: Hybrid (default) / Gemini / Groq -->
       <div class="engine-toggle">
         <span class="et-label">Transcription &amp; Translation Engine</span>
         <div class="et-switch" id="engineSwitch" role="tablist" aria-label="Engine selector">
-          <button type="button" data-engine="gemini" class="active" id="engineBtnGemini">Gemini</button>
+          <button type="button" data-engine="hybrid" class="active" id="engineBtnHybrid">Hybrid</button>
+          <button type="button" data-engine="gemini" id="engineBtnGemini">Gemini</button>
           <button type="button" data-engine="groq" id="engineBtnGroq">Groq</button>
         </div>
+        <span class="engine-note" id="engineNote">Hybrid (recommended): Groq transcribes accurately, Groq drafts the translation, then Gemini retouches it for natural fluency — no line is ever dropped.</span>
       </div>
 
-      <!-- RGB Glow Dropbox -->
       <div class="drop-wrap" id="dropWrap">
         <div class="dropbox" id="dropbox" role="button" tabindex="0" aria-label="Upload a video file">
           <div class="drop-icon" aria-hidden="true">
-            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
               <rect x="2" y="4" width="20" height="16" rx="3"/><path d="m10 9 5 3-5 3z"/>
             </svg>
           </div>
-          <h3>Drag &amp; drop your video</h3>
-          <p>or click to browse your files</p>
-          <span class="hint">MP4 · MOV · MKV · WEBM — up to your server limit</span>
+          <h3>Drag &amp; drop a video</h3>
+          <p>or click to browse — add as many as you like</p>
+          <span class="hint">MP4 · MOV · MKV · WEBM — each upload becomes its own job below</span>
         </div>
       </div>
       <input type="file" id="fileInput" accept="video/*" class="sr-only" />
-
-      <!-- Selected file chip -->
-      <div class="file-chip" id="fileChip">
-        <span class="fico" aria-hidden="true">
-          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><polyline points="14 2 14 8 20 8"/><path d="m10 12 4 2-4 2z"/>
-          </svg>
-        </span>
-        <div class="fmeta">
-          <div class="fname" id="fileName">—</div>
-          <div class="fsize" id="fileSize"></div>
-        </div>
-        <button class="fclear" id="fileClear" title="Remove file" aria-label="Remove file">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-      </div>
 
       <hr style="border:none;border-top:1px solid var(--line);margin:22px 0;">
 
@@ -467,7 +366,7 @@ body{
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
         </svg>
-        Dubbing Setup
+        Dubbing Setup <span style="font-weight:500;color:var(--ink-soft);font-size:11.5px;">(applied when you press Generate on a ready job)</span>
       </div>
 
       <div class="row2">
@@ -510,16 +409,6 @@ body{
       </div>
 
       <div class="field">
-        <label>Detected Source Language</label>
-        <span class="src-badge detecting" id="srcBadge">
-          <svg class="spin-i" id="srcSpin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
-            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-          </svg>
-          <span id="srcText">Auto-Detecting…</span>
-        </span>
-      </div>
-
-      <div class="field">
         <label>TTS Voice Model(s)</label>
         <div class="tts-mode-row">
           <label><input type="radio" name="ttsMode" id="ttsModeSingle" value="single" checked> Single model</label>
@@ -533,16 +422,8 @@ body{
         <div class="control">
           <input type="email" id="notifyEmail" placeholder="you@example.com" autocomplete="email" />
         </div>
-        <div class="field-note">We'll only use this to send the download link once your dub finishes.</div>
+        <div class="field-note">Applies to whichever job you press Generate Dub on. We'll only use it to send that job's download link.</div>
       </div>
-
-      <button class="btn" id="generateBtn" disabled>
-        <span class="btn-ico" aria-hidden="true">
-          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-        </span>
-        <span class="btn-label">Generate Dub</span>
-        <span class="btn-spin" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg></span>
-      </button>
 
       <!-- Past Dubs (browser localStorage — no server RAM used) -->
       <div class="history-card">
@@ -557,69 +438,87 @@ body{
       </div>
     </section>
 
-    <!-- RIGHT: Dashboard -->
-    <section class="card glass">
-      <div class="card-title">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/>
-        </svg>
-        Live Pipeline Dashboard
-      </div>
-
-      <div class="dash">
-        <!-- Progress -->
-        <div>
-          <div class="progress-head">
-            <div class="progress-stage">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-              <span class="st-txt" id="stageText">Idle — awaiting media</span>
-            </div>
-            <div class="progress-pct" id="pctText">0%</div>
-          </div>
-          <div class="progress-track">
-            <div class="progress-fill" id="progressFill"></div>
-          </div>
-          <div class="progress-marks">
-            <span>Upload</span><span>Transcribe</span><span>Voice</span><span>Mux</span><span>Done</span>
-          </div>
-          <div class="queue-note" id="queueNote"></div>
+    <!-- RIGHT: Jobs + Dashboard -->
+    <section>
+      <div class="card jobs-card" style="margin-bottom:20px;">
+        <div class="card-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          Dubbing Jobs
         </div>
-
-        <!-- Console -->
-        <div class="console">
-          <div class="console-bar">
-            <div class="dotset" aria-hidden="true"><i></i><i></i><i></i></div>
-            <div class="console-title">pipeline://status — polling</div>
-            <div class="console-live">
-              <span class="live-dot" id="liveDot"></span>
-              <span id="liveText">idle</span>
-            </div>
-          </div>
-          <div class="console-body" id="console">
-            <div class="console-empty">// Log is idle. Start a dub to see live server updates (polled every few seconds).</div>
-          </div>
+        <div class="jobs-list" id="jobsList">
+          <div class="jobs-empty">No jobs yet — add a video on the left to start one.</div>
         </div>
       </div>
 
-      <!-- Result -->
-      <div class="result" id="resultPanel">
-        <hr style="border:none;border-top:1px solid var(--line);margin:20px 0;">
-        <div class="card-title" style="margin-bottom:14px;">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-          Dubbed Result
+      <div class="card glass">
+        <div class="card-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/>
+          </svg>
+          <span id="dashTitle" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Live Pipeline Dashboard</span>
         </div>
-        <video id="resultVideo" controls playsinline></video>
-        <div class="result-meta" id="resultMeta"></div>
-        <a id="downloadBtn" class="btn" download>
-          <span class="btn-ico" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
-          <span>Download Dubbed Video</span>
-        </a>
+
+        <div class="field" style="margin-bottom:14px;">
+          <span class="src-badge detecting" id="srcBadge">
+            <svg class="spin-i" id="srcSpin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+            </svg>
+            <span id="srcText">No job selected</span>
+          </span>
+        </div>
+
+        <div class="dash">
+          <div>
+            <div class="progress-head">
+              <div class="progress-stage">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                <span class="st-txt" id="stageText">Idle — awaiting media</span>
+              </div>
+              <div class="progress-pct" id="pctText">0%</div>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="progress-marks">
+              <span>Upload</span><span>Transcribe</span><span>Voice</span><span>Mux</span><span>Done</span>
+            </div>
+            <div class="queue-note" id="queueNote"></div>
+          </div>
+
+          <div class="console">
+            <div class="console-bar">
+              <div class="dotset" aria-hidden="true"><i></i><i></i><i></i></div>
+              <div class="console-title" id="consoleTitle">pipeline://status — polling</div>
+              <div class="console-live">
+                <span class="live-dot" id="liveDot"></span>
+                <span id="liveText">idle</span>
+              </div>
+            </div>
+            <div class="console-body" id="console">
+              <div class="console-empty">// No job selected. Add a video, or click a job below to view its live log.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="result" id="resultPanel">
+          <hr style="border:none;border-top:1px solid var(--line);margin:20px 0;">
+          <div class="card-title" style="margin-bottom:14px;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            Dubbed Result
+          </div>
+          <video id="resultVideo" controls playsinline></video>
+          <div class="result-meta" id="resultMeta"></div>
+          <a id="downloadBtn" class="btn" download>
+            <span aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+            <span>Download Dubbed Video</span>
+          </a>
+        </div>
       </div>
     </section>
   </div>
 
   <div class="footer">
-    Aurora Dub · Background job queue · Progress polled every few seconds (no long-lived connections)
+    Aurora Dub · Background job queue · Progress polled every few seconds — jobs survive refresh and closed tabs
   </div>
 </div>
 
@@ -630,12 +529,11 @@ body{
    Config
    ============================================================ */
 const API_BASE = "https://video-dubing-site.onrender.com";
-const POLL_INTERVAL_MS = 4000;      // poll GET /status every ~4s
+const POLL_INTERVAL_MS = 4000;
 const HISTORY_KEY = "auroraDubHistory";
 const HISTORY_MAX = 25;
+const ACTIVE_JOBS_KEY = "auroraDubActiveJobs"; // survives refresh AND closed tabs (localStorage)
 
-/* All 30 official Gemini native-TTS prebuilt voices, with Google's own
-   one-word style tag for each (ai.google.dev/gemini-api/docs/speech-generation). */
 const VOICES = [
   { name: "Zephyr",        style: "Bright"        },
   { name: "Puck",          style: "Upbeat"        },
@@ -670,7 +568,6 @@ const VOICES = [
 ];
 const DEFAULT_VOICE = "Kore";
 
-/* The 4 TTS engine models the backend supports (single or multi-select). */
 const TTS_MODELS = [
   { id: "gemini-2.5-flash-preview-tts", label: "Gemini 2.5 Flash Preview TTS" },
   { id: "gemini-3.1-flash-tts-preview", label: "Gemini 3.1 Flash TTS Preview" },
@@ -678,6 +575,12 @@ const TTS_MODELS = [
   { id: "gemini-3.8-flash-tts-lite",    label: "Gemini 3.8 Flash Lite TTS" }
 ];
 const DEFAULT_TTS_MODEL = TTS_MODELS[0].id;
+
+const ENGINE_NOTES = {
+  hybrid: "Hybrid (recommended): Groq transcribes accurately, Groq drafts the translation, then Gemini retouches it for natural fluency — no line is ever dropped.",
+  gemini: "Pure Gemini: Gemini handles both transcription and translation in one pass.",
+  groq: "Pure Groq: Groq Whisper transcribes and Groq's LLM translates, no Gemini retouch pass."
+};
 
 /* ============================================================
    Element refs
@@ -687,20 +590,17 @@ const $ = (id) => document.getElementById(id);
 const dropWrap = $("dropWrap");
 const dropbox = $("dropbox");
 const fileInput = $("fileInput");
-const fileChip = $("fileChip");
-const fileNameEl = $("fileName");
-const fileSizeEl = $("fileSize");
-const fileClear = $("fileClear");
 
 const targetLang = $("targetLang");
 const voiceSelect = $("voiceSelect");
 const notifyEmail = $("notifyEmail");
-const generateBtn = $("generateBtn");
 
 const srcBadge = $("srcBadge");
 const srcText = $("srcText");
 const srcSpin = $("srcSpin");
 
+const dashTitle = $("dashTitle");
+const consoleTitle = $("consoleTitle");
 const stageText = $("stageText");
 const pctText = $("pctText");
 const progressFill = $("progressFill");
@@ -717,34 +617,56 @@ const downloadBtn = $("downloadBtn");
 const serverDot = $("serverDot");
 const serverStatusText = $("serverStatusText");
 
-const engineSwitch = $("engineSwitch");
+const engineBtnHybrid = $("engineBtnHybrid");
 const engineBtnGemini = $("engineBtnGemini");
 const engineBtnGroq = $("engineBtnGroq");
+const engineNote = $("engineNote");
 const ttsModeSingle = $("ttsModeSingle");
 const ttsModeMulti = $("ttsModeMulti");
 const ttsModelList = $("ttsModelList");
 
+const jobsList = $("jobsList");
 const historyList = $("historyList");
 const historyClearBtn = $("historyClear");
 
 /* ============================================================
-   App state
+   App state — MULTIPLE DUBBING SYSTEM
+   Every uploaded video becomes its own job in `jobs`, polled
+   independently and entirely in the background; the dashboard on the
+   right is just a "viewer" bound to `focusedId`, so switching focus never
+   interrupts any other job's progress.
    ============================================================ */
 const state = {
-  file: null,
-  running: false,             // true while a prepare/dub job is queued or in progress (polling active)
-  phase: "idle",               // idle | uploading | preparing | ready | dubbing | done
-  sessionId: null,
-  prepared: false,
-  uploadXhr: null,
-  pollTimer: null,
-  lastLogCount: 0,             // last log_count seen from /status, for incremental polling
-  targetLanguage: "English",
-  consoleCleared: false,
-  engine: "gemini",            // "gemini" | "groq" — transcription+translation
-  ttsMode: "single",           // "single" | "multi"
-  ttsModels: [DEFAULT_TTS_MODEL]
+  engine: "hybrid",          // "hybrid" | "gemini" | "groq"
+  ttsMode: "single",
+  ttsModels: [DEFAULT_TTS_MODEL],
+  jobs: {},                  // sessionId -> job object
+  focusedId: null
 };
+
+function newJob(sessionId, fileName, fileSize){
+  return {
+    sessionId, fileName, fileSize,
+    engine: state.engine,
+    phase: "uploading",       // uploading|preparing|ready|dubbing|done|error
+    percent: 0,
+    message: "",
+    prepared: false,
+    sourceLanguage: null,
+    videoDuration: null,
+    lineCount: 0,
+    targetLanguage: null,
+    voice: null,
+    downloadUrl: null,
+    segments: null,
+    emailSent: false,
+    errorMsg: null,
+    lastLogCount: 0,
+    logs: [],
+    pollTimer: null,
+    uploadXhr: null
+  };
+}
 
 /* ============================================================
    Utilities
@@ -763,48 +685,91 @@ function nowStamp(){
 function esc(s){
   return String(s).replace(/[&<>"']/g,(c)=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 }
-
-/* Classify a raw log line into a severity for coloring. */
 function logClass(msg){
   const m = msg.toUpperCase();
-  if(m.includes("[ERROR]") || m.includes("FAIL") ) return "l-err";
+  if(m.includes("[ERROR]") || m.includes("FAIL")) return "l-err";
   if(m.includes("[WARN]") || m.includes("WARNING")) return "l-warn";
   if(m.includes("[SUCCESS]") || m.includes("COMPLETE")) return "l-ok";
   if(m.includes("[SYS]") || m.includes("//")) return "l-sys";
   return "l-info";
 }
 
-function pushLog(msg, forceClass){
-  if(!state.consoleCleared){
-    consoleEl.innerHTML = "";
-    state.consoleCleared = true;
+/* ============================================================
+   Console / dashboard rendering — always reflects state.focusedId
+   ============================================================ */
+function renderConsoleFromJob(job){
+  if(!job){
+    consoleEl.innerHTML = '<div class="console-empty">// No job selected. Add a video, or click a job below to view its live log.</div>';
+    return;
   }
-  const row = document.createElement("div");
-  row.className = "log " + (forceClass || logClass(msg));
-  row.innerHTML = `<span class="ts">${nowStamp()}</span><span class="msg">${esc(msg)}</span>`;
-  consoleEl.appendChild(row);
+  if(job.logs.length === 0){
+    consoleEl.innerHTML = '<div class="console-empty">// Log is idle for this job.</div>';
+    return;
+  }
+  consoleEl.innerHTML = "";
+  job.logs.forEach(entry=>{
+    const row = document.createElement("div");
+    row.className = "log " + logClass(entry.msg);
+    row.innerHTML = `<span class="ts">${esc(entry.ts)}</span><span class="msg">${esc(entry.msg)}</span>`;
+    consoleEl.appendChild(row);
+  });
   consoleEl.scrollTop = consoleEl.scrollHeight;
 }
-
-function resetConsole(){
-  consoleEl.innerHTML = '<div class="console-empty">// Log is idle. Start a dub to see live server updates (polled every few seconds).</div>';
-  state.consoleCleared = false;
+function appendJobLog(job, msg){
+  job.logs.push({ ts: nowStamp(), msg });
+  if(job.logs.length > 400) job.logs.splice(0, job.logs.length - 400);
+  if(state.focusedId === job.sessionId){
+    const row = document.createElement("div");
+    row.className = "log " + logClass(msg);
+    row.innerHTML = `<span class="ts">${esc(job.logs[job.logs.length-1].ts)}</span><span class="msg">${esc(msg)}</span>`;
+    if(consoleEl.querySelector(".console-empty")) consoleEl.innerHTML = "";
+    consoleEl.appendChild(row);
+    consoleEl.scrollTop = consoleEl.scrollHeight;
+  }
 }
 
+function setDashboardFor(job){
+  if(!job){
+    dashTitle.textContent = "Live Pipeline Dashboard";
+    consoleTitle.textContent = "pipeline://status — polling";
+    stageText.textContent = "Idle — awaiting media";
+    pctText.textContent = "0%";
+    progressFill.style.width = "0%";
+    progressFill.classList.remove("active");
+    setLive(false);
+    setQueueNote(0);
+    resetSourceBadge();
+    resultPanel.classList.remove("show");
+    renderConsoleFromJob(null);
+    return;
+  }
+  dashTitle.textContent = job.fileName || "Live Pipeline Dashboard";
+  consoleTitle.textContent = `pipeline://${job.sessionId}`;
+  stageText.textContent = job.message || phaseLabel(job.phase);
+  pctText.textContent = Math.round(job.percent) + "%";
+  progressFill.style.width = Math.round(job.percent) + "%";
+  const isActive = ["uploading","preparing","dubbing"].includes(job.phase);
+  progressFill.classList.toggle("active", isActive);
+  setLive(isActive);
+  if(job.sourceLanguage) lockSourceLanguage(job.sourceLanguage);
+  else resetSourceBadge();
+  renderConsoleFromJob(job);
+  if(job.phase === "done"){
+    presentResult(job);
+  }else{
+    resultPanel.classList.remove("show");
+  }
+}
+function phaseLabel(phase){
+  return {
+    uploading:"Uploading…", preparing:"Analyzing…", ready:"Ready — pick language/voice and press Generate Dub",
+    dubbing:"Dubbing…", done:"Complete", error:"Failed"
+  }[phase] || "Idle";
+}
 function setLive(on){
   liveDot.classList.toggle("on", !!on);
   liveText.textContent = on ? "polling" : "idle";
 }
-
-function setProgress(percent, message){
-  const p = Math.max(0, Math.min(100, Math.round(percent)));
-  progressFill.style.width = p + "%";
-  pctText.textContent = p + "%";
-  if(message) stageText.textContent = message;
-}
-
-function setStage(txt){ stageText.textContent = txt; }
-
 function setQueueNote(pos){
   if(pos && pos > 0){
     queueNote.textContent = `Queued — position ${pos} in line (another job is processing first).`;
@@ -814,16 +779,36 @@ function setQueueNote(pos){
     queueNote.textContent = "";
   }
 }
+function lockSourceLanguage(lang){
+  srcBadge.classList.remove("detecting");
+  srcBadge.classList.add("locked");
+  srcSpin.style.display = "none";
+  srcText.textContent = lang;
+}
+function resetSourceBadge(){
+  srcBadge.classList.remove("locked");
+  srcBadge.classList.add("detecting");
+  srcSpin.style.display = "";
+  srcText.textContent = state.focusedId ? "Auto-Detecting…" : "No job selected";
+}
+
+function focusJob(sessionId){
+  state.focusedId = sessionId;
+  renderJobsList();
+  setDashboardFor(state.jobs[sessionId] || null);
+}
 
 /* ============================================================
-   Engine toggle (Gemini <-> Groq)
+   Engine toggle (Hybrid default / Gemini / Groq)
    ============================================================ */
 function setEngine(eng){
-  state.engine = (eng === "groq") ? "groq" : "gemini";
-  engineBtnGemini.classList.toggle("active", state.engine === "gemini");
-  engineBtnGroq.classList.toggle("active", state.engine === "groq");
-  pushLog(`[SYS] Engine set to ${state.engine === "gemini" ? "Gemini" : "Groq"} for transcription + translation.`, "l-sys");
+  state.engine = eng;
+  engineBtnHybrid.classList.toggle("active", eng === "hybrid");
+  engineBtnGemini.classList.toggle("active", eng === "gemini");
+  engineBtnGroq.classList.toggle("active", eng === "groq");
+  engineNote.textContent = ENGINE_NOTES[eng] || "";
 }
+engineBtnHybrid.addEventListener("click", ()=> setEngine("hybrid"));
 engineBtnGemini.addEventListener("click", ()=> setEngine("gemini"));
 engineBtnGroq.addEventListener("click", ()=> setEngine("groq"));
 
@@ -867,26 +852,6 @@ ttsModeMulti.addEventListener("change", ()=>{
   buildTtsModelList();
 });
 
-/* ============================================================
-   Source language badge
-   ============================================================ */
-function lockSourceLanguage(lang){
-  if(!lang || lang === "Unknown") return;
-  srcBadge.classList.remove("detecting");
-  srcBadge.classList.add("locked");
-  srcSpin.style.display = "none";
-  srcText.textContent = lang;
-}
-function resetSourceLanguage(){
-  srcBadge.classList.remove("locked");
-  srcBadge.classList.add("detecting");
-  srcSpin.style.display = "";
-  srcText.textContent = "Auto-Detecting…";
-}
-
-/* ============================================================
-   Voice selectors
-   ============================================================ */
 function buildMainVoiceSelect(){
   voiceSelect.innerHTML = "";
   VOICES.forEach(v=>{
@@ -899,8 +864,7 @@ function buildMainVoiceSelect(){
 }
 
 /* ============================================================
-   localStorage history (completed dubs) — requirement 4
-   Kept entirely client-side so past jobs never take up server RAM.
+   localStorage: Past Dubs history (completed jobs)
    ============================================================ */
 function loadHistory(){
   try{
@@ -911,17 +875,16 @@ function loadHistory(){
 }
 function saveHistory(arr){
   try{ localStorage.setItem(HISTORY_KEY, JSON.stringify(arr.slice(0, HISTORY_MAX))); }
-  catch(_){ /* storage full/unavailable — non-fatal, history just won't persist */ }
+  catch(_){}
 }
 function addHistoryEntry(entry){
-  const arr = loadHistory();
-  arr.unshift(entry); // newest first
+  const arr = loadHistory().filter(e => e.session_id !== entry.session_id);
+  arr.unshift(entry);
   saveHistory(arr);
   renderHistory();
 }
 function removeHistoryEntry(sessionId){
-  const arr = loadHistory().filter(e => e.session_id !== sessionId);
-  saveHistory(arr);
+  saveHistory(loadHistory().filter(e => e.session_id !== sessionId));
   renderHistory();
 }
 function clearHistory(){
@@ -929,10 +892,8 @@ function clearHistory(){
   renderHistory();
 }
 function fmtWhen(ts){
-  try{
-    const d = new Date(ts);
-    return d.toLocaleString([], { month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" });
-  }catch(_){ return ""; }
+  try{ return new Date(ts).toLocaleString([], { month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" }); }
+  catch(_){ return ""; }
 }
 function renderHistory(){
   const arr = loadHistory();
@@ -947,105 +908,154 @@ function renderHistory(){
     const row = document.createElement("div");
     row.className = "history-row";
     const fullUrl = entry.download_url && entry.download_url.startsWith("http")
-      ? entry.download_url
-      : `${API_BASE}${entry.download_url || ("/download/" + entry.session_id)}`;
+      ? entry.download_url : `${API_BASE}${entry.download_url || ("/download/" + entry.session_id)}`;
     row.innerHTML = `
       <div class="hr-main">
-        <div class="hr-title">${esc(entry.target_language || "Dub")} · ${esc(entry.voice || "")}</div>
+        <div class="hr-title">${esc(entry.file_name || entry.target_language || "Dub")} · ${esc(entry.target_language || "")}</div>
         <div class="hr-sub">${esc(fmtWhen(entry.completed_at))} · ${esc(entry.session_id)}</div>
       </div>
       <a class="hr-dl" href="${fullUrl}" target="_blank" rel="noopener">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         Download
       </a>
-      <button class="hr-del" title="Remove from history" aria-label="Remove from history" data-sid="${esc(entry.session_id)}">
+      <button class="hr-del" title="Remove" aria-label="Remove" data-sid="${esc(entry.session_id)}">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     `;
     historyList.appendChild(row);
   });
   historyList.querySelectorAll(".hr-del").forEach(btn=>{
-    btn.addEventListener("click", ()=> removeHistoryEntry(btn.getAttribute("data-sid")));
+    btn.addEventListener("click", (e)=>{ e.stopPropagation(); removeHistoryEntry(btn.getAttribute("data-sid")); });
   });
 }
 historyClearBtn.addEventListener("click", clearHistory);
 
 /* ============================================================
-   File handling
+   localStorage: active jobs (resume on refresh / reopened tab)
+   ============================================================ */
+function persistActiveJobs(){
+  const arr = Object.values(state.jobs)
+    .filter(j => ["uploading","preparing","ready","dubbing"].includes(j.phase))
+    .map(j => ({ session_id: j.sessionId, file_name: j.fileName, phase: j.phase, engine: j.engine }));
+  try{ localStorage.setItem(ACTIVE_JOBS_KEY, JSON.stringify(arr)); }catch(_){}
+}
+function loadActiveJobsPointer(){
+  try{
+    const raw = localStorage.getItem(ACTIVE_JOBS_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  }catch(_){ return []; }
+}
+
+/* ============================================================
+   Jobs list rendering
+   ============================================================ */
+function renderJobsList(){
+  const ids = Object.keys(state.jobs);
+  if(ids.length === 0){
+    jobsList.innerHTML = '<div class="jobs-empty">No jobs yet — add a video on the left to start one.</div>';
+    return;
+  }
+  jobsList.innerHTML = "";
+  ids.forEach(sid=>{
+    const job = state.jobs[sid];
+    const row = document.createElement("div");
+    row.className = "job-row" + (state.focusedId === sid ? " focused" : "");
+    row.dataset.sid = sid;
+
+    let sub = "";
+    if(job.phase === "error") sub = job.errorMsg || "Failed";
+    else if(job.phase === "ready") sub = `${job.sourceLanguage || "?"} detected · ${job.lineCount} line(s) · pick language & press Generate`;
+    else if(job.phase === "done") sub = `${job.targetLanguage || ""} · ${job.sourceLanguage || ""}`;
+    else sub = job.message || phaseLabel(job.phase);
+
+    const showBar = ["uploading","preparing","dubbing"].includes(job.phase);
+    const badgeCls = "st-" + job.phase;
+
+    row.innerHTML = `
+      <div class="jr-top">
+        <div class="jr-name">${esc(job.fileName)}</div>
+        <span class="jr-badge ${badgeCls}">${esc(job.phase)}</span>
+        <button class="jr-del" title="Remove job" aria-label="Remove job">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="jr-sub">${esc(sub)}</div>
+      ${showBar ? `<div class="job-mini-track"><div class="job-mini-fill" style="width:${Math.round(job.percent)}%"></div></div>` : ""}
+      <div class="jr-actions"></div>
+    `;
+
+    const actions = row.querySelector(".jr-actions");
+    if(job.phase === "ready"){
+      const btn = document.createElement("button");
+      btn.className = "btn small";
+      btn.textContent = "Generate Dub";
+      btn.addEventListener("click", (e)=>{ e.stopPropagation(); startDub(sid); });
+      actions.appendChild(btn);
+    }else if(job.phase === "done"){
+      const a = document.createElement("a");
+      a.className = "btn small";
+      a.href = `${API_BASE}${job.downloadUrl}`;
+      a.target = "_blank"; a.rel = "noopener";
+      a.textContent = "Download";
+      actions.appendChild(a);
+    }else if(job.phase === "error"){
+      const btn = document.createElement("button");
+      btn.className = "btn small";
+      btn.textContent = job.prepared ? "Retry Dub" : "Retry Analysis";
+      btn.addEventListener("click", (e)=>{ e.stopPropagation(); job.prepared ? startDub(sid) : retryPrepare(sid); });
+      actions.appendChild(btn);
+    }
+
+    row.addEventListener("click", ()=> focusJob(sid));
+    row.querySelector(".jr-del").addEventListener("click", (e)=>{ e.stopPropagation(); removeJob(sid); });
+
+    jobsList.appendChild(row);
+  });
+}
+
+function updateJobRowLive(sid){
+  // Cheap partial update so we don't rebuild the whole list every poll tick.
+  const job = state.jobs[sid];
+  if(!job) return;
+  const row = jobsList.querySelector(`.job-row[data-sid="${CSS.escape(sid)}"]`);
+  if(!row){ renderJobsList(); return; }
+  const badge = row.querySelector(".jr-badge");
+  if(badge && badge.textContent !== job.phase){ renderJobsList(); return; }
+  const fill = row.querySelector(".job-mini-fill");
+  if(fill) fill.style.width = Math.round(job.percent) + "%";
+  const sub = row.querySelector(".jr-sub");
+  if(sub && job.message) sub.textContent = job.message;
+}
+
+function removeJob(sid){
+  const job = state.jobs[sid];
+  if(job && job.pollTimer) clearTimeout(job.pollTimer);
+  if(job && job.uploadXhr){ try{ job.uploadXhr.abort(); }catch(_){} }
+  delete state.jobs[sid];
+  if(state.focusedId === sid) state.focusedId = null;
+  persistActiveJobs();
+  renderJobsList();
+  if(!state.focusedId) setDashboardFor(null);
+  // Also delete server-side scratch if it never finished (best-effort).
+  fetch(`${API_BASE}/session/${encodeURIComponent(sid)}`, { method:"DELETE" }).catch(()=>{});
+}
+
+/* ============================================================
+   File handling — every accepted file becomes a NEW job (multiple
+   concurrent dubbing jobs, none interrupted by adding another).
    ============================================================ */
 function acceptFile(file){
   if(!file) return;
   if(!file.type.startsWith("video/") && !/\.(mp4|mov|mkv|webm|avi|m4v)$/i.test(file.name)){
-    pushLog("[WARN] Selected file does not look like a video. Proceeding anyway.", "l-warn");
+    console.warn("Selected file does not look like a video.");
   }
-  // Picking a new file while a previous one is mid-flight (or already
-  // uploaded-but-not-yet-dubbed) cleanly cancels/discards that old one.
-  abortCurrentOperation();
-  if(state.sessionId && !state.running){
-    fetch(`${API_BASE}/session/${encodeURIComponent(state.sessionId)}`, { method:"DELETE" }).catch(()=>{});
-  }
-  resetPipelineState();
-
-  state.file = file;
-  fileNameEl.textContent = file.name;
-  fileSizeEl.textContent = fmtBytes(file.size);
-  fileChip.classList.add("show");
-  dropWrap.classList.add("has-file");
-  resultPanel.classList.remove("show");
-  resetConsole();
-
-  // Upload starts the instant a video is picked (gallery, file browser, or
-  // drag-and-drop) — no extra tap needed. /upload queues the background
-  // "prepare" job itself and returns immediately; we then poll /status.
-  // The actual DUBBING only starts when the person presses Generate Dub
-  // (see startDub()).
   uploadAndQueuePrepare(file);
-}
-function clearFile(){
-  abortCurrentOperation();
-  if(state.sessionId && !state.running){
-    fetch(`${API_BASE}/session/${encodeURIComponent(state.sessionId)}`, { method:"DELETE" }).catch(()=>{});
-  }
-  resetPipelineState();
-  state.file = null;
-  fileInput.value = "";
-  fileChip.classList.remove("show");
-  dropWrap.classList.remove("has-file");
-  resultPanel.classList.remove("show");
-  resetConsole();
-  refreshGenerateState();
-}
-function resetPipelineState(){
-  state.sessionId = null;
-  state.prepared = false;
-  state.phase = "idle";
-  state.lastLogCount = 0;
-  setProgress(0, "");
-  setQueueNote(0);
-  resetSourceLanguage();
-}
-function abortCurrentOperation(){
-  if(state.uploadXhr){ try{ state.uploadXhr.abort(); }catch(_){} state.uploadXhr = null; }
-  stopPolling();
-  state.running = false;
-  setLive(false);
-}
-function refreshGenerateState(){
-  const canGenerate = !!(state.sessionId && state.prepared) && !state.running;
-  generateBtn.disabled = !canGenerate;
-  const label = generateBtn.querySelector(".btn-label");
-  if(!label) return;
-  if(state.phase === "uploading") label.textContent = "Uploading…";
-  else if(state.phase === "preparing") label.textContent = "Analyzing…";
-  else if(state.phase === "dubbing") label.textContent = "Dubbing…";
-  else if(state.phase === "ready" || state.phase === "done") label.textContent = "Generate Dub";
-  else label.textContent = "Generate Dub";
 }
 
 dropbox.addEventListener("click", ()=> fileInput.click());
 dropbox.addEventListener("keydown", (e)=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); fileInput.click(); }});
-fileInput.addEventListener("change", ()=> acceptFile(fileInput.files[0]));
-fileClear.addEventListener("click", clearFile);
+fileInput.addEventListener("change", ()=>{ if(fileInput.files[0]) acceptFile(fileInput.files[0]); fileInput.value=""; });
 
 ["dragenter","dragover"].forEach(ev=>{
   dropWrap.addEventListener(ev,(e)=>{ e.preventDefault(); e.stopPropagation(); dropWrap.classList.add("dragging"); });
@@ -1058,259 +1068,266 @@ dropWrap.addEventListener("drop",(e)=>{
   const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
   if(f) acceptFile(f);
 });
-/* Prevent the browser from opening the file when dropped outside the box */
 window.addEventListener("dragover",(e)=> e.preventDefault());
 window.addEventListener("drop",(e)=> e.preventDefault());
 
 /* ============================================================
-   Run lifecycle
+   Polling — one independent poll loop per job. Every job keeps
+   progressing in the background regardless of which job is focused in
+   the dashboard; the dashboard just re-renders when the focused job's
+   state changes.
    ============================================================ */
-function beginRun(phase){
-  state.running = true;
-  state.phase = phase; // "preparing" | "dubbing"
-  generateBtn.classList.add("loading");
-  refreshGenerateState();
-  progressFill.classList.remove("paused");
-  progressFill.classList.add("active");
-  setLive(true);
+function stopPollingJob(job){
+  if(job.pollTimer){ clearTimeout(job.pollTimer); job.pollTimer = null; }
 }
-function endRun(nextPhase){
-  state.running = false;
-  state.phase = nextPhase;
-  generateBtn.classList.remove("loading");
-  progressFill.classList.remove("active");
-  setLive(false);
-  setQueueNote(0);
-  refreshGenerateState();
-}
-/* keepSession=true -> the video/transcript are still valid (only
-   translate/TTS/mux failed), so leave the session in place and let the
-   person just press Generate Dub again without re-uploading. */
-function failRun(reason, keepSession){
-  pushLog("[WARN] " + (reason || "Run stopped.") + " State reset.", "l-warn");
-  stopPolling();
-  if(state.uploadXhr){ try{ state.uploadXhr.abort(); }catch(_){} }
-  if(keepSession && state.sessionId && state.prepared){
-    endRun("ready");
-  }else{
-    resetPipelineState();
-    endRun("idle");
-  }
-}
-function finishRun(statusPayload){
-  setProgress(100, "Complete");
-  pushLog("[SUCCESS] Dubbing finished. Preparing preview…", "l-ok");
-  endRun("done");
-  const sid = statusPayload.session_id || state.sessionId;
-  if(sid){
-    state.sessionId = sid;
-    presentResult(sid, statusPayload);
-    addHistoryEntry({
-      session_id: sid,
-      target_language: statusPayload.target_language || state.targetLanguage,
-      voice: voiceSelect.value,
-      download_url: statusPayload.download_url || `/download/${sid}`,
-      completed_at: Date.now()
-    });
-  }
+function scheduleJobPoll(sid, kind){
+  const job = state.jobs[sid];
+  if(!job) return;
+  stopPollingJob(job);
+  job.pollTimer = setTimeout(()=> pollJobOnce(sid, kind), POLL_INTERVAL_MS);
 }
 
-/* ============================================================
-   Polling — replaces the old SSE stream. Every POLL_INTERVAL_MS we ask
-   GET /status/{session_id}?since=<lastLogCount> for the job's current
-   status/percent/message plus any NEW log lines, and render them into the
-   console exactly like the old live stream did — the difference is this
-   survives idle-connection timeouts because no connection is held open
-   between polls.
-   ============================================================ */
-function stopPolling(){
-  if(state.pollTimer){ clearTimeout(state.pollTimer); state.pollTimer = null; }
-}
-
-function schedulePoll(sessionId, kind){
-  stopPolling();
-  state.pollTimer = setTimeout(()=> pollOnce(sessionId, kind), POLL_INTERVAL_MS);
-}
-
-async function pollOnce(sessionId, kind){
-  // kind: "prepare" | "dub" — only affects how we map percent onto the
-  // overall bar and what a terminal "done" means.
+async function pollJobOnce(sid, kind){
+  const job = state.jobs[sid];
+  if(!job) return;
   try{
-    const res = await fetch(`${API_BASE}/status/${encodeURIComponent(sessionId)}?since=${state.lastLogCount}`);
+    const res = await fetch(`${API_BASE}/status/${encodeURIComponent(sid)}?since=${job.lastLogCount}`);
     if(!res.ok){
       if(res.status === 404){
-        pushLog("[ERROR] Session expired on the server.", "l-err");
-        failRun("Session expired.", false);
+        appendJobLog(job, "[ERROR] Session expired on the server.");
+        job.phase = "error"; job.errorMsg = "Session expired.";
+        persistActiveJobs(); renderJobsList();
+        if(state.focusedId === sid) setDashboardFor(job);
         return;
       }
       throw new Error(`HTTP ${res.status}`);
     }
     const d = await res.json();
 
-    // Render any new log lines.
     if(Array.isArray(d.logs)){
       d.logs.forEach(line=>{
-        pushLog(line);
+        appendJobLog(job, line);
         const m = /source language detected:\s*(.+)/i.exec(line);
-        if(m) lockSourceLanguage(m[1].trim());
+        if(m) job.sourceLanguage = m[1].trim();
       });
     }
-    if(typeof d.log_count === "number") state.lastLogCount = d.log_count;
-    if(d.source_language) lockSourceLanguage(d.source_language);
-    setQueueNote(d.queue_position || 0);
+    if(typeof d.log_count === "number") job.lastLogCount = d.log_count;
+    if(d.source_language) job.sourceLanguage = d.source_language;
+    if(typeof d.video_duration === "number") job.videoDuration = d.video_duration;
+    if(typeof d.line_count === "number") job.lineCount = d.line_count;
 
     if(kind === "prepare"){
-      // Map the server's own 0-100 (prepare phase) onto the bar's 48-100
-      // band; 0-48 was the raw upload, tracked via XHR progress.
-      const pct = typeof d.percent === "number" ? 48 + d.percent * 0.52 : undefined;
-      if(pct !== undefined) setProgress(pct, d.message || undefined);
+      if(typeof d.percent === "number") job.percent = 48 + d.percent * 0.52;
+      job.message = d.message || job.message;
 
       if(d.status === "prepared"){
-        state.prepared = true;
-        setProgress(100, d.line_count ? `Ready — ${d.line_count} line(s) detected` : "Ready");
-        pushLog("[SUCCESS] Ready to dub. Pick a language/voice and press Generate Dub.", "l-ok");
-        endRun("ready");
+        job.prepared = true;
+        job.phase = "ready";
+        job.percent = 100;
+        job.message = d.line_count ? `Ready — ${d.line_count} line(s) detected` : "Ready";
+        appendJobLog(job, "[SUCCESS] Ready to dub. Pick a language/voice and press Generate Dub.");
+        persistActiveJobs(); renderJobsList();
+        if(state.focusedId === sid) setDashboardFor(job);
         return;
       }
       if(d.status === "error"){
-        pushLog("[ERROR] " + (d.error || "Analysis failed."), "l-err");
-        failRun("Analysis failed — please try re-uploading the video.", false);
+        appendJobLog(job, "[ERROR] " + (d.error || "Analysis failed."));
+        job.phase = "error"; job.errorMsg = d.error || "Analysis failed.";
+        persistActiveJobs(); renderJobsList();
+        if(state.focusedId === sid) setDashboardFor(job);
         return;
       }
-      schedulePoll(sessionId, kind);
-    } else {
-      // dub phase — server's own percent maps 1:1 onto the bar.
-      if(typeof d.percent === "number") setProgress(d.percent, d.message || undefined);
+      if(state.focusedId === sid){ pctText.textContent = Math.round(job.percent)+"%"; progressFill.style.width = Math.round(job.percent)+"%"; stageText.textContent = job.message; setQueueNote(d.queue_position||0); }
+      updateJobRowLive(sid);
+      scheduleJobPoll(sid, kind);
+    }else{
+      if(typeof d.percent === "number") job.percent = d.percent;
+      job.message = d.message || job.message;
 
       if(d.status === "done"){
-        finishRun(d);
+        job.phase = "done";
+        job.percent = 100;
+        job.downloadUrl = d.download_url || `/download/${sid}`;
+        job.segments = d.segments;
+        job.emailSent = !!d.email_sent;
+        appendJobLog(job, "[SUCCESS] Dubbing finished.");
+        persistActiveJobs(); renderJobsList();
+        addHistoryEntry({
+          session_id: sid, file_name: job.fileName, target_language: job.targetLanguage,
+          voice: job.voice, download_url: job.downloadUrl, completed_at: Date.now()
+        });
+        if(state.focusedId === sid) setDashboardFor(job);
         return;
       }
       if(d.status === "error"){
-        pushLog("[ERROR] " + (d.error || "Dubbing failed."), "l-err");
-        // Video + transcript are still on the server — no need to
-        // re-upload, just let the person press Generate Dub again.
-        failRun("Dubbing failed.", true);
+        appendJobLog(job, "[ERROR] " + (d.error || "Dubbing failed."));
+        job.phase = "error"; job.errorMsg = d.error || "Dubbing failed.";
+        persistActiveJobs(); renderJobsList();
+        if(state.focusedId === sid) setDashboardFor(job);
         return;
       }
-      schedulePoll(sessionId, kind);
+      if(state.focusedId === sid){ pctText.textContent = Math.round(job.percent)+"%"; progressFill.style.width = Math.round(job.percent)+"%"; stageText.textContent = job.message; setQueueNote(d.queue_position||0); }
+      updateJobRowLive(sid);
+      scheduleJobPoll(sid, kind);
     }
   }catch(err){
-    pushLog("[WARN] Status check failed (" + err.message + ") — retrying…", "l-warn");
-    // Transient network hiccup while polling — keep trying rather than
-    // failing the whole run immediately.
-    schedulePoll(sessionId, kind);
+    appendJobLog(job, "[WARN] Status check failed (" + err.message + ") — retrying…");
+    scheduleJobPoll(sid, kind);
   }
 }
 
 /* ============================================================
-   Result presentation
-   The <video> tag and the download link both point straight at
-   /download, so the browser streams it natively (progressive playback,
-   native Range/seek support, and the OS's own download manager).
+   Result presentation (for the focused job)
    ============================================================ */
-function presentResult(sessionId, meta){
+function presentResult(job){
   resultMeta.innerHTML = "";
   const tags = [];
-  if(meta.source_language) tags.push(["Source", meta.source_language]);
-  if(meta.target_language) tags.push(["Target", meta.target_language]);
-  if(typeof meta.segments !== "undefined") tags.push(["Segments", meta.segments]);
-  if(meta.email_sent) tags.push(["Email", "Sent"]);
+  if(job.sourceLanguage) tags.push(["Source", job.sourceLanguage]);
+  if(job.targetLanguage) tags.push(["Target", job.targetLanguage]);
+  if(typeof job.segments !== "undefined" && job.segments !== null) tags.push(["Segments", job.segments]);
+  if(job.emailSent) tags.push(["Email", "Sent"]);
   tags.forEach(([k,v])=>{
     const el = document.createElement("span");
     el.className = "meta-tag";
     el.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> ${esc(k)}: ${esc(String(v))}`;
     resultMeta.appendChild(el);
   });
-
   resultPanel.classList.add("show");
-  const url = `${API_BASE}/download/${encodeURIComponent(sessionId)}`;
+  const url = `${API_BASE}${job.downloadUrl}`;
   resultVideo.src = url;
   resultVideo.load();
   downloadBtn.href = url;
-  downloadBtn.setAttribute("download", `dubbed_${sessionId}.mp4`);
-  pushLog("[SUCCESS] Preview ready. Download available.", "l-ok");
+  downloadBtn.setAttribute("download", `dubbed_${job.sessionId}.mp4`);
 }
 
 /* ============================================================
-   Network — Phase 1 (automatic): /upload (real XHR progress), which now
-   ALSO queues the background "prepare" job server-side and returns
-   immediately; we then poll /status instead of holding an SSE stream open.
+   Network — upload (creates a new job) + queue prepare
    ============================================================ */
-function uploadAndQueuePrepare(file){
-  beginRun("uploading");
-  setProgress(0, "Uploading…");
-  pushLog(`[SYS] Uploading "${file.name}" (${fmtBytes(file.size)}) · Engine: ${state.engine}…`, "l-sys");
+function uploadAndQueuePrepare(file, existingJob){
+  const tempId = existingJob ? existingJob.sessionId : ("_pending_" + Date.now() + "_" + Math.random().toString(36).slice(2));
+  const job = existingJob || newJob(tempId, file.name, file.size);
+  if(!existingJob){
+    state.jobs[tempId] = job;
+    focusJob(tempId);
+  }
+  job.phase = "uploading";
+  job.percent = 0;
+  appendJobLog(job, `[SYS] Uploading "${file.name}" (${fmtBytes(file.size)}) · Engine: ${job.engine}…`);
+  renderJobsList();
+  if(state.focusedId === job.sessionId) setDashboardFor(job);
 
   const xhr = new XMLHttpRequest();
-  state.uploadXhr = xhr;
+  job.uploadXhr = xhr;
   const fd = new FormData();
   fd.append("file", file);
-  fd.append("engine", state.engine);
+  fd.append("engine", job.engine);
 
   xhr.upload.addEventListener("progress", (e)=>{
     if(!e.lengthComputable) return;
     const frac = e.loaded / e.total;
-    setProgress(frac * 45, `Uploading… ${Math.round(frac * 100)}%`); // upload = first 45% of the bar
+    job.percent = frac * 45;
+    job.message = `Uploading… ${Math.round(frac * 100)}%`;
+    if(state.focusedId === job.sessionId){
+      pctText.textContent = Math.round(job.percent)+"%";
+      progressFill.style.width = Math.round(job.percent)+"%";
+      stageText.textContent = job.message;
+    }
+    updateJobRowLive(job.sessionId);
   });
 
   xhr.addEventListener("load", ()=>{
-    state.uploadXhr = null;
+    job.uploadXhr = null;
     if(xhr.status < 200 || xhr.status >= 300){
       let detail = xhr.responseText || `HTTP ${xhr.status}`;
       try{ const j = JSON.parse(xhr.responseText); detail = j.detail || detail; }catch(_){}
-      pushLog("[ERROR] Upload failed: " + detail, "l-err");
-      failRun("Upload failed.");
+      appendJobLog(job, "[ERROR] Upload failed: " + detail);
+      job.phase = "error"; job.errorMsg = "Upload failed.";
+      renderJobsList();
+      if(state.focusedId === job.sessionId) setDashboardFor(job);
       return;
     }
     let j = null;
     try{ j = JSON.parse(xhr.responseText); }catch(_){}
     if(!j || !j.session_id){
-      pushLog("[ERROR] Upload succeeded but no session id was returned.", "l-err");
-      failRun("Bad upload response.");
+      appendJobLog(job, "[ERROR] Upload succeeded but no session id was returned.");
+      job.phase = "error"; job.errorMsg = "Bad upload response.";
+      renderJobsList();
+      if(state.focusedId === job.sessionId) setDashboardFor(job);
       return;
     }
-    state.sessionId = j.session_id;
-    state.lastLogCount = 0;
-    pushLog("[SUCCESS] Upload complete. Queued for analysis (extract audio + transcribe) — this now runs in the background even if you close this tab.", "l-ok");
-    setProgress(48, "Queued for analysis…");
-    state.phase = "preparing";
-    refreshGenerateState();
-    schedulePoll(j.session_id, "prepare");
+    // Re-key the job from the temporary id to the real server session_id.
+    const realId = j.session_id;
+    delete state.jobs[job.sessionId];
+    job.sessionId = realId;
+    state.jobs[realId] = job;
+    if(state.focusedId === tempId || state.focusedId === job.sessionId) state.focusedId = realId;
+
+    job.phase = "preparing";
+    job.percent = 48;
+    job.message = "Queued for analysis…";
+    appendJobLog(job, "[SUCCESS] Upload complete. Queued for analysis — this runs in the background even if you close this tab.");
+    persistActiveJobs();
+    renderJobsList();
+    if(state.focusedId === realId) setDashboardFor(job);
+    scheduleJobPoll(realId, "prepare");
   });
 
   xhr.addEventListener("error", ()=>{
-    state.uploadXhr = null;
-    pushLog("[ERROR] Upload connection failed.", "l-err");
-    failRun("Upload connection error.");
+    job.uploadXhr = null;
+    appendJobLog(job, "[ERROR] Upload connection failed.");
+    job.phase = "error"; job.errorMsg = "Upload connection error.";
+    renderJobsList();
+    if(state.focusedId === job.sessionId) setDashboardFor(job);
   });
-  xhr.addEventListener("abort", ()=>{ state.uploadXhr = null; });
+  xhr.addEventListener("abort", ()=>{ job.uploadXhr = null; });
 
   xhr.open("POST", `${API_BASE}/upload`);
   xhr.send(fd);
 }
 
-/* ============================================================
-   Network — Phase 2 (manual, button press): POST /dub queues the job and
-   returns immediately; we then poll /status the same way.
-   ============================================================ */
-async function startDub(){
-  if(!state.sessionId || !state.prepared || state.running) return;
+function retryPrepare(sid){
+  const job = state.jobs[sid];
+  if(!job) return;
+  job.phase = "preparing";
+  job.percent = 50;
+  appendJobLog(job, "[SYS] Retrying analysis…");
+  renderJobsList();
+  if(state.focusedId === sid) setDashboardFor(job);
+  fetch(`${API_BASE}/prepare/${encodeURIComponent(sid)}?engine=${encodeURIComponent(job.engine)}`)
+    .then(()=> scheduleJobPoll(sid, "prepare"))
+    .catch(err=>{
+      appendJobLog(job, "[ERROR] Retry failed: " + err.message);
+      job.phase = "error"; job.errorMsg = "Retry failed.";
+      renderJobsList();
+      if(state.focusedId === sid) setDashboardFor(job);
+    });
+}
 
-  state.targetLanguage = targetLang.value;
-  beginRun("dubbing");
-  resultPanel.classList.remove("show");
-  setProgress(0, "Queuing dub job…");
-  state.lastLogCount = 0;
+/* ============================================================
+   Network — Generate Dub for a specific job (multiple jobs can each be
+   dubbed independently; the server processes them one at a time but you
+   can queue as many as you like from the UI).
+   ============================================================ */
+async function startDub(sid){
+  const job = state.jobs[sid];
+  if(!job || job.phase !== "ready") return;
+
+  job.targetLanguage = targetLang.value;
+  job.voice = voiceSelect.value;
+  job.phase = "dubbing";
+  job.percent = 0;
+  job.lastLogCount = job.lastLogCount; // keep incremental log position across phases
   const modelsCsv = state.ttsModels.join(",");
   const emailVal = (notifyEmail.value || "").trim();
-  pushLog(`[SYS] Queuing dub -> ${targetLang.value} · Voice: ${voiceSelect.value} · Engine: ${state.engine} · TTS model(s): ${modelsCsv}` + (emailVal ? ` · Notify: ${emailVal}` : ""), "l-sys");
+  appendJobLog(job, `[SYS] Queuing dub -> ${job.targetLanguage} · Voice: ${job.voice} · Engine: ${job.engine} · TTS model(s): ${modelsCsv}` + (emailVal ? ` · Notify: ${emailVal}` : ""));
+  renderJobsList();
+  if(state.focusedId === sid) setDashboardFor(job);
 
   const fd = new FormData();
-  fd.append("session_id", state.sessionId);
-  fd.append("target_language", targetLang.value);
-  fd.append("voice_name", voiceSelect.value);
-  fd.append("engine", state.engine);
+  fd.append("session_id", sid);
+  fd.append("target_language", job.targetLanguage);
+  fd.append("voice_name", job.voice);
+  fd.append("engine", job.engine);
   fd.append("tts_models", modelsCsv);
   if(emailVal) fd.append("email", emailVal);
 
@@ -1323,15 +1340,62 @@ async function startDub(){
       throw new Error(`HTTP ${res.status}${detail ? " — " + detail : ""}`);
     }
     const j = await res.json();
-    pushLog(`[SUCCESS] Dub job queued (status: ${j.status}). This now runs in the background — you can close this tab` + (emailVal ? " and we'll email you the link." : "."), "l-ok");
-    schedulePoll(state.sessionId, "dub");
+    appendJobLog(job, `[SUCCESS] Dub job queued (status: ${j.status}). Running in the background.`);
+    persistActiveJobs();
+    scheduleJobPoll(sid, "dub");
   }catch(err){
-    pushLog("[ERROR] Could not queue dub job: " + err.message, "l-err");
-    failRun("Dub queue request failed.", true);
+    appendJobLog(job, "[ERROR] Could not queue dub job: " + err.message);
+    job.phase = "error"; job.errorMsg = "Dub queue request failed.";
+    renderJobsList();
+    if(state.focusedId === sid) setDashboardFor(job);
   }
 }
 
-generateBtn.addEventListener("click", startDub);
+/* ============================================================
+   Resume on load — reads localStorage for jobs that were still active
+   when the page was last closed/refreshed, re-hydrates them from
+   GET /status, and resumes polling. This is what makes a refresh or a
+   reopened tab NOT lose an in-progress job.
+   ============================================================ */
+async function resumeActiveJobs(){
+  const pointers = loadActiveJobsPointer();
+  if(pointers.length === 0) return;
+  for(const ptr of pointers){
+    try{
+      const res = await fetch(`${API_BASE}/status/${encodeURIComponent(ptr.session_id)}?since=0`);
+      if(!res.ok) continue; // gone server-side — drop it silently
+      const d = await res.json();
+      const job = newJob(ptr.session_id, ptr.file_name || ptr.session_id, 0);
+      job.engine = ptr.engine || "hybrid";
+      job.lastLogCount = d.log_count || 0;
+      job.sourceLanguage = d.source_language || null;
+      job.videoDuration = d.video_duration || null;
+      job.lineCount = d.line_count || 0;
+      job.targetLanguage = d.target_language || null;
+      (d.logs || []).forEach(line => job.logs.push({ ts: nowStamp(), msg: line }));
+
+      if(d.status === "done"){
+        job.phase = "done"; job.percent = 100;
+        job.downloadUrl = d.download_url; job.segments = d.segments; job.emailSent = !!d.email_sent;
+      }else if(d.status === "error"){
+        job.phase = "error"; job.errorMsg = d.error || "Failed.";
+      }else if(d.status === "prepared"){
+        job.phase = "ready"; job.prepared = true; job.percent = 100;
+      }else if(["queued_prepare","preparing"].includes(d.status)){
+        job.phase = "preparing"; job.percent = 48 + (d.percent||0) * 0.52;
+        scheduleJobPoll(ptr.session_id, "prepare");
+      }else if(["queued_dub","dubbing"].includes(d.status)){
+        job.phase = "dubbing"; job.percent = d.percent || 0;
+        scheduleJobPoll(ptr.session_id, "dub");
+      }
+      state.jobs[ptr.session_id] = job;
+    }catch(_){ /* network hiccup on resume — skip this one, keep going */ }
+  }
+  renderJobsList();
+  persistActiveJobs();
+  const firstNonTerminal = Object.values(state.jobs).find(j => j.phase !== "done" && j.phase !== "error") || Object.values(state.jobs)[0];
+  if(firstNonTerminal) focusJob(firstNonTerminal.sessionId);
+}
 
 /* ============================================================
    Backend health check
@@ -1359,10 +1423,12 @@ async function checkHealth(){
    ============================================================ */
 buildMainVoiceSelect();
 buildTtsModelList();
-resetConsole();
-refreshGenerateState();
+setEngine("hybrid");
+renderJobsList();
+setDashboardFor(null);
 renderHistory();
 checkHealth();
+resumeActiveJobs();
 </script>
 </body>
 </html>
