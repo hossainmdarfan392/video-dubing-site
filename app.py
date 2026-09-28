@@ -191,6 +191,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import difflib
 import json
 import os
 import re
@@ -273,12 +274,21 @@ JOB_LOG_HISTORY_LIMIT = int(os.environ.get("JOB_LOG_HISTORY_LIMIT", "300") or "3
 #             does both transcription (via audio understanding) and
 #             translation/localization in one coherent pass.
 #   "groq"   -> original Whisper (transcribe) + gpt-oss-120b (translate) path.
-# The frontend can override this per-request (?engine=groq|gemini on
-# /prepare, and an `engine` form field on /dub) without restarting the
-# server, so a person can flip the toggle live if one provider is degraded.
-ENGINE_MODE_DEFAULT = os.environ.get("ENGINE_MODE", "gemini").strip().lower()
-if ENGINE_MODE_DEFAULT not in ("gemini", "groq"):
-    ENGINE_MODE_DEFAULT = "gemini"
+#   "hybrid" -> (NEW, recommended default) Groq Whisper does the heavy,
+#             accurate TRANSCRIPTION; Groq then produces an initial
+#             TRANSLATION pass; Gemini then RETOUCHES that translation for
+#             natural fluency (never re-translating from scratch, never
+#             restructuring, and never dropping a line — see
+#             gemini_retouch_all). This exists because pure single-model
+#             transcription/translation was found to be less accurate than
+#             combining Groq's dedicated ASR strength with Gemini's
+#             language polish.
+# The frontend can override this per-request (?engine= on /prepare, and an
+# `engine` form field on /dub) without restarting the server, so a person
+# can flip the toggle live if one provider is degraded.
+ENGINE_MODE_DEFAULT = os.environ.get("ENGINE_MODE", "hybrid").strip().lower()
+if ENGINE_MODE_DEFAULT not in ("gemini", "groq", "hybrid"):
+    ENGINE_MODE_DEFAULT = "hybrid"
 
 def _parse_model_chain(singular_env: str, plural_env: str, default_chain: List[str]) -> List[str]:
     """
@@ -979,6 +989,68 @@ def _extract_json(text: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Repeated-segment de-duplication (fixes ASR "stutter"/hallucination, where
+# the model outputs the same line — or a near-identical variant — several
+# times in a row, most commonly around silence, music, or noisy audio).
+# --------------------------------------------------------------------------- #
+
+_DEDUPE_NORMALIZE_RE = re.compile(r"[^\w\s]", re.UNICODE)
+
+
+def _normalize_for_dedupe(text: str) -> str:
+    """Lowercase + strip punctuation/extra whitespace so 'Hello!!' and
+    'hello' compare as the same line for repeat detection."""
+    t = _DEDUPE_NORMALIZE_RE.sub("", (text or "").strip().lower())
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _dedupe_repeated_segments(
+    segments: List[Dict[str, object]],
+    similarity_threshold: float = 0.90,
+) -> Tuple[List[Dict[str, object]], int]:
+    """
+    Collapse consecutive segments that are the same line repeated (or a
+    near-identical restatement of it) — the classic Whisper/Gemini
+    hallucination failure mode on silence, background music, or noisy
+    audio, where the same sentence gets transcribed 3-10x in a row. Only
+    ADJACENT segments are ever merged (a line that legitimately recurs
+    much later in the video, e.g. a repeated catchphrase, is left alone).
+
+    When a run of near-duplicate segments is found, only the FIRST one's
+    text is kept (it's usually the cleanest read), but the merged
+    segment's end-time is stretched to cover the whole run, so no audio
+    time is lost — this keeps the transcript's total duration coverage
+    intact for the downstream duration-matching step. Returns
+    (deduped_segments, number_of_segments_removed).
+    """
+    if not segments:
+        return segments, 0
+    out: List[Dict[str, object]] = [dict(segments[0])]
+    removed = 0
+    for seg in segments[1:]:
+        prev = out[-1]
+        prev_norm = _normalize_for_dedupe(str(prev.get("text", "")))
+        cur_norm = _normalize_for_dedupe(str(seg.get("text", "")))
+        is_repeat = False
+        if prev_norm and cur_norm:
+            if prev_norm == cur_norm:
+                is_repeat = True
+            else:
+                ratio = difflib.SequenceMatcher(None, prev_norm, cur_norm).ratio()
+                if ratio >= similarity_threshold:
+                    is_repeat = True
+        if is_repeat:
+            try:
+                prev["end"] = max(float(prev.get("end", 0.0)), float(seg.get("end", 0.0)))
+            except (TypeError, ValueError):
+                pass
+            removed += 1
+            continue
+        out.append(dict(seg))
+    return out, removed
+
+
+# --------------------------------------------------------------------------- #
 # Groq helpers: whisper-large-v3 transcription + openai/gpt-oss-120b
 # translation
 # --------------------------------------------------------------------------- #
@@ -1343,6 +1415,186 @@ async def gemini_translate_all(
         "source_language": detected_source_language or source_language,
         "segments": all_segments,
         "input_count": len(transcript_segments),
+        "output_count": len(all_segments),
+        "fallback_count": fallback_count,
+        "fallback_ranges": fallback_ranges,
+    }
+
+
+async def _gemini_retouch_chunk(
+    chunk_segments: List[Dict[str, object]],
+    source_language: str,
+    target_language: str,
+) -> List[Dict[str, object]]:
+    """
+    ONE chunk of the hybrid-engine retouch pass: each segment already
+    carries a Groq-produced draft translation (`text`) plus the original
+    source line (`source_text`) for reference. Gemini's ONLY job here is
+    to polish that draft for natural, native-sounding fluency — it is
+    explicitly NOT asked to re-translate from scratch, restructure, merge,
+    split, reorder, or drop anything. Returns the polished segment list,
+    or an EMPTY list (never raises) if the response doesn't come back as a
+    strict 1:1 match — the caller (gemini_retouch_all) then falls back to
+    keeping the Groq draft for that chunk, so a retouch hiccup can never
+    cost a line.
+    """
+    system_prompt = (
+        "You are a senior native-language editor doing the FINAL polish "
+        "pass on an already-translated video-dubbing script. You will be "
+        "given a JSON array of segments; each has the ORIGINAL source-"
+        f"language ({source_language}) line and a DRAFT {target_language} "
+        "translation of it (already produced by another translator).\n\n"
+        "YOUR ONLY JOB: retouch each draft translation for natural, "
+        "native, everyday spoken fluency in the target language — fix any "
+        "awkward phrasing, stiff/literal wording, or grammar issues, and "
+        "make idioms and word choice sound like a native speaker wrote it. "
+        "You are NOT re-translating from scratch: use the source line only "
+        "as meaning-reference to confirm the draft is accurate, and start "
+        "from the draft itself.\n\n"
+        "STRICT RULES (CRITICAL):\n"
+        "1. NEVER merge two segments, split one into two, reorder segments, "
+        "or move words/phrases from one segment into another — each "
+        "segment's retouch must stay entirely within that same segment. "
+        "This is a dubbing script; breaking segment boundaries breaks the "
+        "sync between the dubbed voice and the video.\n"
+        "2. NEVER drop, skip, or leave a segment untouched-but-missing from "
+        "the output — every input segment MUST have a corresponding output "
+        "segment, same order, same count.\n"
+        "3. If a draft translation is already natural and correct, keep it "
+        "exactly as-is — do not change wording just to change it.\n"
+        "4. Do not change the MEANING of any line versus its source.\n\n"
+        "Respond with ONLY raw JSON (no markdown fences), in exactly this "
+        'shape: {"segments": [{"start": 0.0, "end": 3.2, '
+        '"text": "<retouched translation>"}]}'
+    )
+    user_payload = json.dumps({"segments": chunk_segments}, ensure_ascii=False)
+
+    def _do(model_name: str, api_key: str) -> str:
+        client = get_client(api_key)
+        resp = client.models.generate_content(
+            model=model_name,
+            contents=[system_prompt, user_payload],
+        )
+        return resp.text
+
+    if not GEMINI_API_KEYS:
+        raise RuntimeError("No GEMINI_API_KEY(s) configured.")
+
+    raw = None
+    last_err: Optional[Exception] = None
+    for model_name in GEMINI_TRANSLATE_MODELS:
+        for key in GEMINI_API_KEYS:
+            try:
+                raw = await asyncio.to_thread(_do, model_name, key)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                continue
+        if raw is not None:
+            break
+    if raw is None:
+        raise RuntimeError(
+            f"Gemini retouch failed on all {len(GEMINI_TRANSLATE_MODELS)} "
+            f"model(s) x {len(GEMINI_API_KEYS)} configured key(s): {last_err}"
+        ) from last_err
+
+    try:
+        data = _extract_json(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+    out_segments = []
+    for s in data.get("segments", []):
+        if not isinstance(s, dict):
+            continue
+        try:
+            start = float(s.get("start", 0.0))
+            end = float(s.get("end", 0.0))
+        except (TypeError, ValueError):
+            continue
+        text = str(s.get("text", "")).strip()
+        if not text:
+            continue
+        out_segments.append({"start": start, "end": end, "text": text})
+
+    if len(out_segments) != len(chunk_segments):
+        return []
+    return out_segments
+
+
+async def gemini_retouch_all(
+    draft_segments: List[Dict[str, object]],
+    raw_source_segments: List[Dict[str, object]],
+    source_language: str,
+    target_language: str,
+) -> dict:
+    """
+    Hybrid-engine retouch pass: takes Groq's already-complete draft
+    translation (`draft_segments`, guaranteed 1:1 with the transcript by
+    groq_translate_all) and asks Gemini to polish each line's fluency,
+    chunk by chunk, in the same char-budgeted, drop-proof pattern used
+    everywhere else in this pipeline. Critically: if Gemini's retouch of a
+    chunk fails or doesn't come back 1:1 after retries, that chunk falls
+    back to the GROQ DRAFT (already a complete, valid translation) rather
+    than the raw source text — so a retouch failure only costs polish, or
+    never costs a line, only ever costs polish on a few lines, never drops
+    or blanks them.
+    """
+    if not draft_segments:
+        raise RuntimeError("Nothing to retouch — the draft translation is empty.")
+
+    chunks = _chunk_by_char_budget(draft_segments)
+    source_chunks = _chunk_by_char_budget(raw_source_segments) if raw_source_segments else []
+
+    all_segments: List[Dict[str, object]] = []
+    fallback_count = 0
+    fallback_ranges: List[str] = []
+
+    for chunk_idx, chunk in enumerate(chunks):
+        source_chunk = source_chunks[chunk_idx] if chunk_idx < len(source_chunks) else [None] * len(chunk)
+        payload_chunk = []
+        for i, seg in enumerate(chunk):
+            src_text = ""
+            if i < len(source_chunk) and source_chunk[i] is not None:
+                src_text = str(source_chunk[i].get("text", ""))
+            payload_chunk.append({
+                "start": float(seg.get("start", 0.0)),
+                "end": float(seg.get("end", 0.0)),
+                "source_text": src_text,
+                "text": str(seg.get("text", "")),
+            })
+
+        result_segments: List[Dict[str, object]] = []
+        for attempt in range(1 + TRANSLATE_CHUNK_RETRIES):
+            try:
+                retouched = await _gemini_retouch_chunk(payload_chunk, source_language, target_language)
+            except Exception:  # noqa: BLE001
+                continue
+            if len(retouched) == len(chunk):
+                result_segments = retouched
+                break
+
+        if not result_segments:
+            # Retouch failed for this chunk after every retry — fall back
+            # to the Groq draft translation for just these lines. The
+            # draft is already a complete, correct translation (it went
+            # through groq_translate_all's own drop-proof guarantee), so
+            # this NEVER drops a line — it only skips the extra polish.
+            fallback_count += len(chunk)
+            fallback_ranges.append(
+                f"{payload_chunk[0]['start']:.1f}s-{payload_chunk[-1]['end']:.1f}s"
+            )
+            result_segments = [
+                {"start": float(seg.get("start", 0.0)), "end": float(seg.get("end", 0.0)),
+                 "text": str(seg.get("text", "")).strip()}
+                for seg in chunk
+            ]
+
+        all_segments.extend(result_segments)
+
+    return {
+        "segments": all_segments,
+        "input_count": len(draft_segments),
         "output_count": len(all_segments),
         "fallback_count": fallback_count,
         "fallback_ranges": fallback_ranges,
@@ -1839,42 +2091,14 @@ def _tts_style_hint(target_language: str) -> str:
     """
     Base delivery style, plus an accent note for languages where Gemini's
     default pronunciation may default to the "wrong" regional accent.
-
-    Product requirement (MANDATORY, not a suggestion): the delivery is
-    HIGH-CONFIDENCE and ENERGETIC — assured, upbeat, engaging — from the
-    very first word to the very last, with explicitly:
-      * NO dramatic/theatrical performance (no exaggerated gasps, no
-        thriller-style suspense, no movie-trailer pacing, no overacted
-        emotional swings);
-      * NO shouting or excessive loudness — a controlled, comfortable
-        conversational volume throughout, not a hyped-up announcer;
-      * NO tapering/fading of energy or volume anywhere in the narration,
-        including at the end of each individual chunk/sentence, not just
-        the very end of the whole script.
-    This exact instruction is re-sent with EVERY chunk (see
-    gemini_tts_with_fallback), so the same energy/volume level is
-    reinforced at the start of every chunk, not just the first — and the
-    FFmpeg `dynaudnorm` pass in `_speed_filter` acts as a deterministic
-    safety net afterward for anything the model doesn't fully honor.
+    Bengali is the explicit case in point: Gemini's default Bengali
+    pronunciation tends toward the West Bengal (Indian) accent, and a
+    Bangladeshi user naturally wants natural Bangladesh (Dhaka-standard)
+    Bengali instead — a different accent, not just a different language.
     """
     base = (
-        "MANDATORY delivery style — follow exactly, do not deviate: speak "
-        "with high confidence and energetic delivery — assured, upbeat, and "
-        "engaging — and hold that SAME energy and volume level from your "
-        "very first word all the way to your very last word, including "
-        "across every sentence boundary within this chunk. Do not soften, "
-        "taper, slow down, or fade the energy or volume at the end of this "
-        "chunk, at the end of any sentence within it, or near the end of "
-        "the overall script, under any circumstance. Do not shout or speak "
-        "excessively loudly — keep the volume at a natural, comfortable, "
-        "conversational level throughout, never straining or peaking. "
-        "Absolutely NO dramatic or theatrical performance: no "
-        "thriller-style suspense, no movie-trailer build-up, no exaggerated "
-        "emotion, no overacting. Keep it natural and grounded — clear "
-        "articulation, natural pacing, brief natural pauses between "
-        "sentences — but consistently confident, energetic, and at a "
-        "steady, controlled volume throughout: not a hyped-up announcer, "
-        "not a shouting narrator, and not a fading one"
+        "Speak naturally, clearly, and expressively, with natural pacing "
+        "and brief natural pauses between sentences"
     )
     lang = (target_language or "").strip().lower()
     if "bengali" in lang or "bangla" in lang:
@@ -2035,9 +2259,14 @@ async def run_prepare(sess: Session) -> AsyncGenerator[dict, None]:
                 else:
                     yield ev
         else:
+            # Both the pure "groq" engine and the "hybrid" engine (Groq
+            # transcribe -> Groq translate -> Gemini retouch) use Groq
+            # Whisper here — it is the most accurate transcription engine
+            # available in this pipeline, which is why "hybrid" is the
+            # recommended default.
             yield sse_progress(50, f"Transcribing with Groq Whisper ({WHISPER_MODELS[0]})")
             yield sse_log(
-                "[INFO] Streaming audio to Groq Whisper for instant transcription "
+                "[INFO] Streaming audio to Groq Whisper for accurate transcription "
                 f"— model fallback chain: {', '.join(WHISPER_MODELS)}..."
             )
             async for ev in self_heal("Groq transcription", lambda: groq_transcribe(sess.audio_path)):
@@ -2047,7 +2276,22 @@ async def run_prepare(sess: Session) -> AsyncGenerator[dict, None]:
                     yield ev
 
         sess.source_language = transcript["language"]
-        sess.raw_segments = [Segment(**s) for s in transcript["segments"]]
+
+        # Collapse hallucinated repeated lines (the model saying the same
+        # sentence several times in a row, most often around silence,
+        # music, or noisy stretches) BEFORE anything downstream ever sees
+        # them — this is the fix for repeated-line transcripts. Only
+        # adjacent, near-identical repeats are merged; a genuinely
+        # recurring line elsewhere in the video is untouched.
+        deduped_segments, removed_count = _dedupe_repeated_segments(transcript["segments"])
+        if removed_count > 0:
+            yield sse_log(
+                f"[WARN] Collapsed {removed_count} repeated/hallucinated line(s) "
+                "detected in the raw transcript (same sentence transcribed "
+                "back-to-back) — kept one copy per run, stretched to cover "
+                "the full repeated span."
+            )
+        sess.raw_segments = [Segment(**s) for s in deduped_segments]
         sess.prepared = True
         save_session(sess)
 
@@ -2099,6 +2343,73 @@ async def run_dub(sess: Session) -> AsyncGenerator[dict, None]:
                     result = ev["_result"]
                 else:
                     yield ev
+        elif engine == "hybrid":
+            # HYBRID PIPELINE (recommended default): Groq Whisper already
+            # transcribed accurately in run_prepare; now Groq produces the
+            # initial translation (its own drop-proof, chunked, retried
+            # pass — identical guarantee to the pure "groq" engine below),
+            # and THEN Gemini retouches every line for natural fluency
+            # without ever re-translating from scratch, restructuring, or
+            # dropping a line (see gemini_retouch_all).
+            yield sse_progress(25, f"Translating {len(sess.raw_segments)} line(s) with Groq ({TRANSLATION_MODELS[0]})")
+            yield sse_log(
+                f"[INFO] Step 1/2 — Draft translation via Groq "
+                f"({TRANSLATION_MODELS[0]}; backup chain: "
+                f"{', '.join(TRANSLATION_MODELS[1:]) or 'none'}) in "
+                f"~{TRANSLATE_CHUNK_CHAR_BUDGET}-char chunks — every line "
+                "verified 1:1, so none can be silently dropped..."
+            )
+            draft_result = None
+            async for ev in self_heal("Groq draft translation", lambda: groq_translate_all(
+                transcript_segments=seg_dicts,
+                source_language=sess.source_language or "Unknown",
+                target_language=sess.target_language,
+            )):
+                if "_result" in ev:
+                    draft_result = ev["_result"]
+                else:
+                    yield ev
+
+            if draft_result["fallback_count"] > 0:
+                ranges = ", ".join(draft_result["fallback_ranges"])
+                yield sse_log(
+                    f"[WARN] {draft_result['fallback_count']} line(s) (around "
+                    f"{ranges}) could not be verified in the draft pass after "
+                    "retries, so the ORIGINAL source-language text was kept "
+                    "for those lines instead of being dropped."
+                )
+
+            sess.source_language = draft_result["source_language"]
+
+            yield sse_progress(40, f"Retouching {len(draft_result['segments'])} line(s) with Gemini")
+            yield sse_log(
+                f"[INFO] Step 2/2 — Fluency retouch via Gemini "
+                f"({GEMINI_TRANSLATE_MODELS[0]}; backup chain: "
+                f"{', '.join(GEMINI_TRANSLATE_MODELS[1:]) or 'none'}) — "
+                "polishing each line for natural, native phrasing without "
+                "re-translating, restructuring, or dropping anything. A "
+                "retouch hiccup on any chunk falls back to the already-"
+                "correct Groq draft for just those lines, never a blank..."
+            )
+            async for ev in self_heal("Gemini retouch", lambda: gemini_retouch_all(
+                draft_segments=draft_result["segments"],
+                raw_source_segments=seg_dicts,
+                source_language=sess.source_language or "Unknown",
+                target_language=sess.target_language,
+            )):
+                if "_result" in ev:
+                    result = ev["_result"]
+                else:
+                    yield ev
+            result["source_language"] = sess.source_language
+            if result["fallback_count"] > 0:
+                ranges = ", ".join(result["fallback_ranges"])
+                yield sse_log(
+                    f"[WARN] {result['fallback_count']} line(s) (around "
+                    f"{ranges}) could not be retouched after retries, so the "
+                    "Groq draft translation was kept for those lines "
+                    "(still fully translated, just without the extra polish)."
+                )
         else:
             yield sse_progress(30, f"Translating {len(sess.raw_segments)} line(s) with Groq ({TRANSLATION_MODELS[0]})")
             yield sse_log(
@@ -2117,10 +2428,10 @@ async def run_dub(sess: Session) -> AsyncGenerator[dict, None]:
                 else:
                     yield ev
 
-        sess.source_language = result["source_language"]
+        sess.source_language = result.get("source_language") or sess.source_language
         sess.segments = [Segment(**s) for s in result["segments"]]
 
-        if result["fallback_count"] > 0:
+        if engine != "hybrid" and result["fallback_count"] > 0:
             ranges = ", ".join(result["fallback_ranges"])
             yield sse_log(
                 f"[WARN] {result['fallback_count']} line(s) (around {ranges}) "
@@ -2162,8 +2473,10 @@ async def health() -> JSONResponse:
         "gemini_keys_configured": len(GEMINI_API_KEYS),
         "groq_keys_configured": len(GROQ_API_KEYS),
         "default_engine": ENGINE_MODE_DEFAULT,
-        "engines_available": [e for e in ("gemini", "groq") if
-                              (GEMINI_API_KEYS if e == "gemini" else GROQ_API_KEYS)],
+        "engines_available": [e for e in ("gemini", "groq", "hybrid") if
+                              (bool(GEMINI_API_KEYS) if e == "gemini" else
+                               bool(GROQ_API_KEYS) if e == "groq" else
+                               bool(GEMINI_API_KEYS) and bool(GROQ_API_KEYS))],
         "tts_models": TTS_MODELS,
         "tts_model_labels": TTS_MODEL_CATALOG,
         "tts_chunk_char_budget": TTS_CHUNK_CHAR_BUDGET,
@@ -2201,11 +2514,11 @@ async def upload(
     """
     _sweep_stale_sessions()
     chosen_engine = (engine or "").strip().lower()
-    if chosen_engine not in ("gemini", "groq"):
+    if chosen_engine not in ("gemini", "groq", "hybrid"):
         chosen_engine = ENGINE_MODE_DEFAULT
-    if chosen_engine == "groq" and not GROQ_API_KEYS:
+    if chosen_engine in ("groq", "hybrid") and not GROQ_API_KEYS:
         raise HTTPException(status_code=500, detail="No GROQ_API_KEY(s) configured.")
-    if chosen_engine == "gemini" and not GEMINI_API_KEYS:
+    if chosen_engine in ("gemini", "hybrid") and not GEMINI_API_KEYS:
         raise HTTPException(status_code=500, detail="No GEMINI_API_KEY(s) configured.")
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file uploaded.")
@@ -2251,7 +2564,7 @@ async def prepare_kickoff(session_id: str, engine: str = "") -> JSONResponse:
         raise HTTPException(status_code=404, detail="Unknown or expired session_id.")
 
     eng = (engine or "").strip().lower()
-    if eng in ("gemini", "groq"):
+    if eng in ("gemini", "groq", "hybrid"):
         sess.engine = eng
 
     if sess.status in ("uploaded",) or (sess.status == "error" and not sess.prepared):
@@ -2282,11 +2595,12 @@ async def dub(
     the job finishes.
     """
     eng = (engine or "").strip().lower()
-    eng = eng if eng in ("gemini", "groq") else None
+    eng = eng if eng in ("gemini", "groq", "hybrid") else None
+    effective_eng = eng or ENGINE_MODE_DEFAULT
 
-    if (eng or ENGINE_MODE_DEFAULT) == "gemini" and not GEMINI_API_KEYS:
+    if effective_eng in ("gemini", "hybrid") and not GEMINI_API_KEYS:
         raise HTTPException(status_code=500, detail="No GEMINI_API_KEY(s) configured.")
-    if (eng or ENGINE_MODE_DEFAULT) == "groq" and not GROQ_API_KEYS:
+    if effective_eng in ("groq", "hybrid") and not GROQ_API_KEYS:
         raise HTTPException(status_code=500, detail="No GROQ_API_KEY(s) configured.")
     if not GEMINI_API_KEYS:
         raise HTTPException(status_code=500, detail="No GEMINI_API_KEY(s) configured (required for TTS).")
