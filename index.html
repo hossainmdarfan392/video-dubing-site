@@ -492,6 +492,7 @@ body{
               <div class="console-live">
                 <span class="live-dot" id="liveDot"></span>
                 <span id="liveText">idle</span>
+                <span id="lastUpdate" style="margin-left:6px;"></span>
               </div>
             </div>
             <div class="console-body" id="console">
@@ -529,7 +530,7 @@ body{
    Config
    ============================================================ */
 const API_BASE = "https://video-dubing-site.onrender.com";
-const POLL_INTERVAL_MS = 4000;
+const POLL_INTERVAL_MS = 1000;   // live: ask the backend every second
 const HISTORY_KEY = "auroraDubHistory";
 const HISTORY_MAX = 25;
 const ACTIVE_JOBS_KEY = "auroraDubActiveJobs"; // survives refresh AND closed tabs (localStorage)
@@ -608,6 +609,13 @@ const queueNote = $("queueNote");
 const consoleEl = $("console");
 const liveDot = $("liveDot");
 const liveText = $("liveText");
+const lastUpdateEl = $("lastUpdate");
+let lastPollOkAt = 0;
+setInterval(()=>{
+  if(!lastPollOkAt){ lastUpdateEl.textContent = ""; return; }
+  const sec = Math.max(0, Math.round((Date.now() - lastPollOkAt)/1000));
+  lastUpdateEl.textContent = liveDot.classList.contains("on") ? `· updated ${sec}s ago` : "";
+}, 500);
 
 const resultPanel = $("resultPanel");
 const resultVideo = $("resultVideo");
@@ -1086,7 +1094,7 @@ function scheduleJobPoll(sid, _kind, delayMs){
   stopPollingJob(job);
   // While the server is unreachable (e.g. free hosting waking up) back off a
   // little, but never give up — the job itself keeps running server-side.
-  const backoff = job.failCount ? Math.min(10000, POLL_INTERVAL_MS + job.failCount * 1500) : POLL_INTERVAL_MS;
+  const backoff = job.failCount ? Math.min(8000, POLL_INTERVAL_MS + job.failCount * 1000) : POLL_INTERVAL_MS;
   job.pollTimer = setTimeout(()=> pollJobOnce(sid), typeof delayMs === "number" ? delayMs : backoff);
 }
 
@@ -1126,6 +1134,7 @@ async function pollJobOnce(sid){
       appendJobLog(job, "[SUCCESS] Reconnected to the server — job is still tracked.");
       job.failCount = 0;
     }
+    if(state.focusedId === sid) lastPollOkAt = Date.now();
     if(Array.isArray(d.logs)){
       d.logs.forEach(line=>{
         appendJobLog(job, line);
