@@ -198,6 +198,9 @@ import re
 import shutil
 import smtplib
 import time
+import urllib.request
+import urllib.error
+from contextlib import asynccontextmanager
 import uuid
 import wave
 from dataclasses import asdict, dataclass, field
@@ -255,15 +258,40 @@ FFPROBE_BIN = os.environ.get("FFPROBE_BIN", "ffprobe")
 # so a broken/missing SMTP config never fails the dubbing job itself — it
 # just logs a [WARN] into the session's own log history (visible via
 # GET /status) and moves on.
+#
+# IMPORTANT (Render): free-tier Render web services BLOCK outbound SMTP
+# ports 25/465/587, so plain SMTP can never work there. Three providers
+# are supported, tried in this order — the first one that is configured
+# wins:
+#   1. BREVO_API_KEY   (HTTPS API, port 443 — works on Render free tier;
+#                       free plan = 300 emails/day, needs a verified sender)
+#   2. RESEND_API_KEY  (HTTPS API, port 443 — works on Render free tier)
+#   3. SMTP_HOST ...   (only works where outbound SMTP is allowed, e.g. a
+#                       paid Render instance, a VPS, or local dev)
+# EMAIL_FROM is the verified sender address used by the two HTTPS providers.
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "").strip()
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 SMTP_HOST = os.environ.get("SMTP_HOST", "").strip()
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587") or "587")
 SMTP_USER = os.environ.get("SMTP_USER", "").strip()
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "").strip()
 SMTP_FROM = os.environ.get("SMTP_FROM", "").strip() or SMTP_USER
-# Public base URL the emailed download link should point at (the frontend's
-# API_BASE) — falls back to a relative path if unset, which still works if
-# the recipient opens the email on the same host.
-PUBLIC_API_BASE = os.environ.get("PUBLIC_API_BASE", "").rstrip("/")
+EMAIL_FROM = os.environ.get("EMAIL_FROM", "").strip() or SMTP_FROM
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Aurora Dub").strip()
+# Public base URL the emailed download link should point at. Falls back to
+# Render's own RENDER_EXTERNAL_URL (set automatically on Render), then to a
+# relative path.
+PUBLIC_API_BASE = (
+    os.environ.get("PUBLIC_API_BASE", "").strip()
+    or os.environ.get("RENDER_EXTERNAL_URL", "").strip()
+).rstrip("/")
+
+# --- Keep-alive / restart-recovery (Render free tier sleeps after ~15 min
+# without INBOUND HTTP traffic — background jobs alone do not count, so a
+# user going offline mid-dub let the whole instance spin down and killed the
+# job). While any session is queued/running/awaiting-dub the server pings
+# its own public URL so the instance is not put to sleep.
+KEEPALIVE_INTERVAL_SECONDS = int(os.environ.get("KEEPALIVE_INTERVAL_SECONDS", "240") or "240")
 
 # --- Job log history (per session, for GET /status polling) ---------------
 JOB_LOG_HISTORY_LIMIT = int(os.environ.get("JOB_LOG_HISTORY_LIMIT", "300") or "300")
@@ -356,7 +384,10 @@ def parse_selected_tts_models(raw: str) -> List[str]:
 TTS_CALL_TIMEOUT_SECONDS = 150
 
 # --- TTS chunking (RAM protection + voice-quality guard) --------------------
-TTS_CHUNK_CHAR_BUDGET = 1500
+TTS_CHUNK_CHAR_BUDGET = int(os.environ.get("TTS_CHUNK_CHAR_BUDGET", "1500") or "1500")
+# (<=1500 by product rule; lowering it via env makes each generation shorter,
+#  which reduces the model's tendency to rush near the end of a long take.)
+TTS_CHUNK_CHAR_BUDGET = max(300, min(1500, TTS_CHUNK_CHAR_BUDGET))
 # LOCKED silence pad between consecutively generated TTS chunks. Product
 # requirement: this must stay locked around 500ms — never arbitrarily lower
 # (which would risk splicing chunks together so tightly it sounds like one
@@ -408,7 +439,45 @@ SOFT_SPEED_MAX = 1.3
 ATEMPO_LOCK_MIN = 1.15
 ATEMPO_LOCK_MAX = 1.30
 
-TTS_LOUDNESS_NORMALIZE_FILTER = "dynaudnorm=f=250:g=15:p=0.95:m=8"
+# --- Voice "energy consistency" filters (FFmpeg) ------------------------------
+# Problem: Gemini TTS starts each take well but tends to RUSH and lose energy
+# near the END of a chunk. A prompt can't fully fix that, so it is corrected
+# deterministically in audio, per chunk, right after each chunk is generated
+# (before the chunks are stitched together):
+#   1. tail-pace fix  -> if the last part of the chunk (after its last natural
+#                        pause) is rushed, that region is slowed slightly
+#                        (atempo, pitch preserved) — see _slow_chunk_tail().
+#   2. energy polish  -> highpass (rumble) + 2x dynaudnorm (evens loudness
+#                        from first word to last, lifts a fading tail; the
+#                        low threshold keeps quiet pauses/breaths from being
+#                        boosted) + gentle compressor + presence EQ (clarity/
+#                        "energetic" tone) + limiter (never shouts/clips).
+TTS_POLISH_ENABLED = os.environ.get("TTS_POLISH_ENABLED", "1").strip() not in ("0", "false", "no")
+TTS_ENERGY_POLISH_FILTER = (
+    "highpass=f=60,"
+    "dynaudnorm=f=100:g=5:p=0.9:m=10:t=0.005,"
+    "dynaudnorm=f=100:g=5:p=0.9:m=10:t=0.005,"
+    "acompressor=threshold=0.1:ratio=3:attack=5:release=120:makeup=1,"
+    "equalizer=f=140:t=q:w=1:g=1.2,"
+    "equalizer=f=3200:t=q:w=1:g=2,"
+    "alimiter=limit=0.9:level=disabled"
+)
+# Tail-pace correction (set TTS_TAIL_SLOWDOWN=1.0 to disable).
+TTS_TAIL_SLOWDOWN = float(os.environ.get("TTS_TAIL_SLOWDOWN", "0.94") or "0.94")
+TTS_TAIL_REGION_FRACTION = float(os.environ.get("TTS_TAIL_REGION_FRACTION", "0.35") or "0.35")
+TTS_TAIL_MIN_PAUSE_SECONDS = 0.12
+TTS_TAIL_PAUSE_DB = -35.0
+
+# Final whole-track pass (after the locked 1.15-1.30x atempo): even out the
+# loudness envelope one more time, add presence, then set ONE consistent
+# broadcast-style loudness (-16 LUFS) so the dub is energetic but never
+# shouting, from first second to last.
+TTS_LOUDNESS_NORMALIZE_FILTER = (
+    "equalizer=f=3200:t=q:w=1:g=1.5,"
+    "dynaudnorm=f=250:g=15:p=0.95:m=8:t=0.005,"
+    "loudnorm=I=-16:TP=-1.5:LRA=9,"
+    "alimiter=limit=0.95:level=disabled"
+)
 
 SEQUENTIAL_PROCESSING = True
 
@@ -479,7 +548,9 @@ class Session:
 
 
 SESSIONS: Dict[str, Session] = {}
-SESSION_TTL_SECONDS = 60 * 60  # 1h safety sweep for abandoned sessions.
+SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", str(60 * 60)) or 3600)  # abandoned/unfinished
+DONE_SESSION_TTL_SECONDS = int(os.environ.get("DONE_SESSION_TTL_SECONDS", str(6 * 60 * 60)) or 21600)  # finished dubs stay downloadable longer
+_ACTIVE_SESSION_ID: Optional[str] = None  # session the worker is processing right now
 
 
 def _session_file(sdir: Path) -> Path:
@@ -564,17 +635,25 @@ def _destroy_session(session_id: str) -> None:
 
 
 def _sweep_stale_sessions() -> None:
+    """Delete expired sessions (disk + RAM). Finished dubs get the longer
+    DONE_SESSION_TTL_SECONDS so the download link/email stays usable; anything
+    unfinished uses SESSION_TTL_SECONDS. Never touches a session that is
+    running or waiting in the queue."""
     now = time.time()
     if not WORK_DIR.exists():
         return
+    queued_ids = {sid for _, sid in JOB_QUEUE}
     for child in WORK_DIR.iterdir():
         if not child.is_dir():
+            continue
+        if child.name == _ACTIVE_SESSION_ID or child.name in queued_ids:
             continue
         try:
             age = now - child.stat().st_mtime
         except OSError:
             continue
-        if age > SESSION_TTL_SECONDS:
+        ttl = DONE_SESSION_TTL_SECONDS if (child / "dubbed_output.mp4").exists() else SESSION_TTL_SECONDS
+        if age > ttl:
             _destroy_session(child.name)
 
 
@@ -631,7 +710,8 @@ async def _apply_event_to_session(sess: Session, ev: dict) -> None:
     elif kind == "log":
         _append_job_log(sess, str(ev.get("data", "")))
     elif kind == "error":
-        _append_job_log(sess, str(ev.get("data", "")))
+        sess.job_error = str(ev.get("data", ""))
+        _append_job_log(sess, sess.job_error)
     elif kind == "done":
         _append_job_log(sess, "[SUCCESS] Job finished.")
     if sess.dir.exists():
@@ -642,32 +722,108 @@ async def _apply_event_to_session(sess: Session, ev: dict) -> None:
 # Email notification (optional — no-op if SMTP_HOST isn't configured)
 # --------------------------------------------------------------------------- #
 
+def _email_provider() -> str:
+    """Which email transport is configured ('' if none)."""
+    if BREVO_API_KEY and EMAIL_FROM:
+        return "brevo"
+    if RESEND_API_KEY and EMAIL_FROM:
+        return "resend"
+    if SMTP_HOST:
+        return "smtp"
+    return ""
+
+
+def _http_json_post(url: str, headers: Dict[str, str], payload: dict, timeout: int = 25) -> None:
+    """POST JSON over HTTPS (port 443 — never blocked by Render's free tier).
+    Raises RuntimeError with the provider's error text on any non-2xx."""
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "application/json")
+    req.add_header("User-Agent", "AuroraDub/5.1")
+    for k, v in headers.items():
+        req.add_header(k, v)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp.read()
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", "ignore")[:300]
+        except Exception:  # noqa: BLE001
+            pass
+        raise RuntimeError(f"HTTP {exc.code} from email provider: {detail}") from exc
+
+
 def _send_completion_email_sync(to_email: str, session_id: str, download_url: str,
-                                 target_language: str) -> None:
+                                 target_language: str) -> str:
     """
-    Synchronous SMTP send (run via asyncio.to_thread so it never blocks the
-    event loop). Raises on failure — the caller catches and logs a [WARN]
-    into the session's own log history instead of failing the job.
+    Synchronous send (run via asyncio.to_thread so it never blocks the event
+    loop). Returns the provider name used. Raises on failure — the caller
+    catches it and logs a [WARN] instead of failing the job.
     """
-    if not SMTP_HOST:
-        raise RuntimeError("SMTP_HOST is not configured on the server.")
+    provider = _email_provider()
+    if not provider:
+        raise RuntimeError(
+            "No email provider configured on the server. Render's free tier "
+            "blocks SMTP, so set BREVO_API_KEY + EMAIL_FROM (or RESEND_API_KEY "
+            "+ EMAIL_FROM) in the Render environment variables."
+        )
     subject = "Your Aurora Dub video is ready"
-    body = (
+    text_body = (
         f"Good news — your dubbed video (into {target_language}) has finished "
         f"processing.\n\nDownload it here:\n{download_url}\n\n"
-        f"Session: {session_id}\n\nThis link stays available until the "
-        "session is cleaned up server-side, so download it soon."
+        f"Session: {session_id}\n\nThis link stays available for a limited "
+        "time, so download it soon."
     )
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = subject
-    msg["From"] = SMTP_FROM or "no-reply@aurora-dub.local"
-    msg["To"] = to_email
+    html_body = (
+        f"<p>Good news — your dubbed video (into <b>{target_language}</b>) has "
+        f"finished processing.</p><p><a href=\"{download_url}\">Download your "
+        f"dubbed video</a></p><p style=\"color:#888\">Session: {session_id}<br>"
+        "This link stays available for a limited time, so download it soon.</p>"
+    )
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
-        server.starttls()
-        if SMTP_USER and SMTP_PASSWORD:
-            server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(msg["From"], [to_email], msg.as_string())
+    if provider == "brevo":
+        _http_json_post(
+            "https://api.brevo.com/v3/smtp/email",
+            {"api-key": BREVO_API_KEY},
+            {
+                "sender": {"name": EMAIL_FROM_NAME, "email": EMAIL_FROM},
+                "to": [{"email": to_email}],
+                "subject": subject,
+                "htmlContent": html_body,
+                "textContent": text_body,
+            },
+        )
+    elif provider == "resend":
+        _http_json_post(
+            "https://api.resend.com/emails",
+            {"Authorization": f"Bearer {RESEND_API_KEY}"},
+            {
+                "from": f"{EMAIL_FROM_NAME} <{EMAIL_FROM}>",
+                "to": [to_email],
+                "subject": subject,
+                "html": html_body,
+                "text": text_body,
+            },
+        )
+    else:  # smtp
+        msg = MIMEText(text_body, "plain", "utf-8")
+        msg["Subject"] = subject
+        msg["From"] = SMTP_FROM or "no-reply@aurora-dub.local"
+        msg["To"] = to_email
+        if SMTP_PORT == 465:
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+                if SMTP_USER and SMTP_PASSWORD:
+                    server.login(SMTP_USER, SMTP_PASSWORD)
+                server.sendmail(msg["From"], [to_email], msg.as_string())
+        else:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+                server.starttls()
+                if SMTP_USER and SMTP_PASSWORD:
+                    server.login(SMTP_USER, SMTP_PASSWORD)
+                server.sendmail(msg["From"], [to_email], msg.as_string())
+    return provider
 
 
 async def _maybe_send_completion_email(sess: Session) -> None:
@@ -684,12 +840,12 @@ async def _maybe_send_completion_email(sess: Session) -> None:
     download_url = f"{PUBLIC_API_BASE}/download/{sess.session_id}" if PUBLIC_API_BASE \
         else f"/download/{sess.session_id}"
     try:
-        await asyncio.to_thread(
+        used = await asyncio.to_thread(
             _send_completion_email_sync, sess.notify_email, sess.session_id,
             download_url, sess.target_language,
         )
         sess.email_sent = True
-        _append_job_log(sess, f"[SUCCESS] Completion email sent to {sess.notify_email}.")
+        _append_job_log(sess, f"[SUCCESS] Completion email sent to {sess.notify_email} (via {used}).")
     except Exception as exc:  # noqa: BLE001
         _append_job_log(sess, f"[WARN] Could not send completion email: {type(exc).__name__}: {exc}")
     if sess.dir.exists():
@@ -729,7 +885,7 @@ def _queue_position(session_id: str) -> int:
 def _ensure_worker_started() -> None:
     global _worker_task
     if _worker_task is None or _worker_task.done():
-        _worker_task = asyncio.get_event_loop().create_task(_job_worker())
+        _worker_task = asyncio.get_running_loop().create_task(_job_worker())
 
 
 def _enqueue_job(kind: str, session_id: str) -> None:
@@ -806,6 +962,8 @@ async def _job_worker() -> None:
             await _JOB_QUEUE_EVENT.wait()
             continue
         kind, session_id = JOB_QUEUE.popleft()
+        global _ACTIVE_SESSION_ID
+        _ACTIVE_SESSION_ID = session_id
         try:
             await _process_job(kind, session_id)
         except Exception:  # noqa: BLE001 — never let one bad job kill the worker loop
@@ -813,6 +971,78 @@ async def _job_worker() -> None:
             if sess is not None and sess.dir.exists():
                 sess.status = "error"
                 save_session(sess)
+        finally:
+            _ACTIVE_SESSION_ID = None
+
+
+# --------------------------------------------------------------------------- #
+# Restart recovery + keep-alive (Render free tier sleeps / restarts)
+# --------------------------------------------------------------------------- #
+
+def _recover_sessions_on_startup() -> int:
+    """
+    If the process (re)starts while sessions from a previous run are still on
+    disk (e.g. a crash/redeploy with a persistent disk, or a quick restart
+    before the container's disk was recycled), pick up every session that was
+    mid-job and re-queue it so the work continues by itself — the person
+    doesn't have to re-upload. Returns how many jobs were re-queued.
+    """
+    if not WORK_DIR.exists():
+        return 0
+    resumed = 0
+    children = sorted(
+        (c for c in WORK_DIR.iterdir() if c.is_dir() and _session_file(c).exists()),
+        key=lambda c: _session_file(c).stat().st_mtime,
+    )
+    for child in children:
+        sess = load_session(child.name)
+        if sess is None or not sess.video_path or not sess.video_path.exists():
+            continue
+        if sess.status in ("queued_prepare", "preparing"):
+            sess.status = "queued_prepare"
+            _append_job_log(sess, "[SYS] Server restarted — resuming analysis automatically.")
+            save_session(sess)
+            _enqueue_job("prepare", sess.session_id)
+            resumed += 1
+        elif sess.status in ("queued_dub", "dubbing") and sess.prepared and sess.raw_segments:
+            sess.status = "queued_dub"
+            _append_job_log(sess, "[SYS] Server restarted — resuming dubbing automatically.")
+            save_session(sess)
+            _enqueue_job("dub", sess.session_id)
+            resumed += 1
+    return resumed
+
+
+def _has_pending_work() -> bool:
+    """True while the instance should be kept awake: something is running,
+    queued, or a prepared video is waiting for the person to press Dub."""
+    if JOB_QUEUE or _ACTIVE_SESSION_ID:
+        return True
+    for sess in list(SESSIONS.values()):
+        if sess.status in ("queued_prepare", "preparing", "queued_dub", "dubbing", "prepared"):
+            return True
+    return False
+
+
+def _self_ping(url: str) -> None:
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("User-Agent", "AuroraDub-KeepAlive/1.0")
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        resp.read(64)
+
+
+async def _keepalive_loop() -> None:
+    """Every KEEPALIVE_INTERVAL_SECONDS: sweep expired sessions, and — only
+    while there is real work — hit our own public /ping so Render counts it as
+    inbound traffic and does not spin the instance down mid-job."""
+    while True:
+        await asyncio.sleep(max(60, KEEPALIVE_INTERVAL_SECONDS))
+        try:
+            await asyncio.to_thread(_sweep_stale_sessions)
+            if PUBLIC_API_BASE and _has_pending_work():
+                await asyncio.to_thread(_self_ping, f"{PUBLIC_API_BASE}/ping")
+        except Exception:  # noqa: BLE001 — a failed ping must never crash the loop
+            pass
 
 
 # --------------------------------------------------------------------------- #
@@ -830,6 +1060,20 @@ async def _run(cmd: List[str]) -> str:
         err = (stderr or b"").decode("utf-8", "ignore").strip()
         raise RuntimeError(f"Command failed ({' '.join(cmd[:2])}...): {err[:800]}")
     return (stdout or b"").decode("utf-8", "ignore")
+
+
+async def _run_stderr(cmd: List[str]) -> str:
+    """Like _run() but returns STDERR (where ffmpeg's silencedetect prints)."""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        err = (stderr or b"").decode("utf-8", "ignore").strip()
+        raise RuntimeError(f"Command failed ({' '.join(cmd[:2])}...): {err[-500:]}")
+    return (stderr or b"").decode("utf-8", "ignore")
 
 
 async def probe_duration(media_path: Path) -> float:
@@ -1892,6 +2136,95 @@ async def self_heal(
 # fails over IMMEDIATELY to the next key, then the next model).
 # --------------------------------------------------------------------------- #
 
+async def _slow_chunk_tail(src_wav: Path, out_wav: Path) -> bool:
+    """
+    Fix "the voice rushes at the end of the chunk": find the last natural pause
+    in the final TTS_TAIL_REGION_FRACTION of the chunk and slow ONLY the speech
+    after that pause by TTS_TAIL_SLOWDOWN (pitch preserved via atempo). The cut
+    is placed in the middle of a real silence, so it can never slice a word.
+    Returns True if a correction was applied (out_wav written), False if there
+    was nothing to fix (caller keeps src_wav).
+    """
+    if not (0.85 <= TTS_TAIL_SLOWDOWN < 0.999):
+        return False
+    dur = await probe_duration(src_wav)
+    if dur < 3.0:
+        return False
+    log = await _run_stderr([
+        FFMPEG_BIN, "-hide_banner", "-i", str(src_wav),
+        "-af", f"silencedetect=noise={TTS_TAIL_PAUSE_DB:.0f}dB:d={TTS_TAIL_MIN_PAUSE_SECONDS}",
+        "-f", "null", "-",
+    ])
+    starts = [float(x) for x in re.findall(r"silence_start:\s*(-?[\d.]+)", log)]
+    ends = [float(x) for x in re.findall(r"silence_end:\s*(-?[\d.]+)", log)]
+    region_start = dur * (1.0 - TTS_TAIL_REGION_FRACTION)
+    cut = None
+    for i, st in enumerate(starts):
+        en = ends[i] if i < len(ends) else dur
+        mid = (st + en) / 2.0
+        # a pause inside the tail region, with real speech left after it
+        if mid >= region_start and en < dur - 0.25:
+            cut = mid  # keep the LAST such pause
+    if cut is None or cut <= 0.5 or cut >= dur - 0.3:
+        return False
+    tempo = TTS_TAIL_SLOWDOWN
+    await _run([
+        FFMPEG_BIN, "-y", "-i", str(src_wav),
+        "-filter_complex",
+        f"[0:a]atrim=0:{cut:.3f},asetpts=PTS-STARTPTS[a];"
+        f"[0:a]atrim=start={cut:.3f},asetpts=PTS-STARTPTS,atempo={tempo:.3f}[b];"
+        "[a][b]concat=n=2:v=0:a=1[o]",
+        "-map", "[o]", "-ar", str(TTS_SAMPLE_RATE), "-ac", str(TTS_CHANNELS),
+        "-c:a", "pcm_s16le", str(out_wav),
+    ])
+    return True
+
+
+async def _polish_chunk_pcm(pcm: bytes, work_dir: Path, idx: int) -> Tuple[bytes, str]:
+    """
+    Per-chunk voice polish (runs right after each TTS chunk, sequentially, with
+    every temp file deleted immediately): tail-pace fix -> energy polish.
+    Returns (polished_pcm, short_note). On ANY failure returns the ORIGINAL pcm
+    untouched (a polish problem must never lose or break a chunk).
+    """
+    if not TTS_POLISH_ENABLED:
+        return pcm, "polish disabled"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    raw = work_dir / f"chunk_{idx}_raw.wav"
+    tail = work_dir / f"chunk_{idx}_tail.wav"
+    out = work_dir / f"chunk_{idx}_polished.wav"
+    notes: List[str] = []
+    try:
+        write_wav_from_pcm(pcm, raw)
+        src = raw
+        try:
+            if await _slow_chunk_tail(raw, tail):
+                src = tail
+                notes.append(f"tail slowed x{TTS_TAIL_SLOWDOWN:.2f}")
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"tail-fix skipped ({type(exc).__name__})")
+        await _run([
+            FFMPEG_BIN, "-y", "-i", str(src),
+            "-filter:a", TTS_ENERGY_POLISH_FILTER,
+            "-ar", str(TTS_SAMPLE_RATE), "-ac", str(TTS_CHANNELS),
+            "-c:a", "pcm_s16le", str(out),
+        ])
+        with wave.open(str(out), "rb") as wf:
+            polished = wf.readframes(wf.getnframes())
+        if len(polished) < 2000:  # sanity: an empty/garbage result -> keep original
+            return pcm, "polish result too short, kept original"
+        notes.append("energy polish")
+        return polished, ", ".join(notes)
+    except Exception as exc:  # noqa: BLE001
+        return pcm, f"polish failed ({type(exc).__name__}: {exc}) — kept original"
+    finally:
+        for f in (raw, tail, out):
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def write_wav_from_pcm(pcm_bytes: bytes, out_wav: Path) -> None:
     with wave.open(str(out_wav), "wb") as wf:
         wf.setnchannels(TTS_CHANNELS)
@@ -2006,6 +2339,11 @@ async def gemini_tts_with_fallback(
                 f"selected model(s) x {len(GEMINI_API_KEYS)} configured key(s). "
                 f"Last error: {last_err}"
             ) from last_err
+
+        # Per-chunk voice polish (tail-pace fix + consistent energy) BEFORE the
+        # chunk is stitched to the others.
+        pcm, polish_note = await _polish_chunk_pcm(pcm, out_wav.parent / "polish", idx)
+        yield sse_log(f"[INFO] Chunk {idx}/{len(chunks)} voice polish: {polish_note}.")
 
         if idx > 1:
             pcm_total.extend(pad_bytes)
@@ -2313,8 +2651,15 @@ async def run_prepare(sess: Session) -> AsyncGenerator[dict, None]:
             "line_count": len(sess.raw_segments),
         })
     except Exception as exc:  # noqa: BLE001
+        # Keep the session (video stays) so the person can press Retry instead
+        # of re-uploading; only scratch files are removed now, the rest is
+        # reclaimed by the TTL sweep.
         yield sse_error(f"[ERROR] {type(exc).__name__}: {exc}")
-        _destroy_session(sess.session_id)
+        if sess.audio_path and sess.audio_path.exists():
+            try:
+                sess.audio_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 async def run_dub(sess: Session) -> AsyncGenerator[dict, None]:
@@ -2445,15 +2790,34 @@ async def run_dub(sess: Session) -> AsyncGenerator[dict, None]:
         async for ev in synthesize_single_track(sess):
             yield ev
     except Exception as exc:  # noqa: BLE001
+        # Keep the uploaded video + transcript so "Retry Dub" works without a
+        # re-upload; free the heavy scratch audio right away.
         yield sse_error(f"[ERROR] {type(exc).__name__}: {exc}")
-        _destroy_session(sess.session_id)
+        shutil.rmtree(sess.dir / "segments", ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- #
 # FastAPI app + endpoints
 # --------------------------------------------------------------------------- #
 
-app = FastAPI(title="Ultimate Premium Video Dubbing Platform", version="5.0.0-polling")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Startup: sweep old sessions, resume anything that was mid-job, start the
+    # keep-alive loop. Shutdown: stop it cleanly.
+    try:
+        _sweep_stale_sessions()
+        _recover_sessions_on_startup()
+    except Exception:  # noqa: BLE001
+        pass
+    ka_task = asyncio.get_running_loop().create_task(_keepalive_loop())
+    try:
+        yield
+    finally:
+        ka_task.cancel()
+
+
+app = FastAPI(title="Ultimate Premium Video Dubbing Platform", version="5.1.0-polling",
+              lifespan=_lifespan)
 
 _cors_origins_raw = os.environ.get("CORS_ALLOW_ORIGINS", "*").strip()
 _cors_origins = ["*"] if _cors_origins_raw in ("", "*") else _parse_key_list(_cors_origins_raw)
@@ -2464,6 +2828,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/ping")
+async def ping() -> JSONResponse:
+    """Ultra-light liveness endpoint (used by the self keep-alive and safe to
+    point an external uptime monitor at, e.g. every 5 minutes)."""
+    return JSONResponse({"ok": True, "active": bool(_ACTIVE_SESSION_ID), "queued": len(JOB_QUEUE)})
 
 
 @app.get("/health")
@@ -2492,7 +2863,9 @@ async def health() -> JSONResponse:
         "gemini_translate_models": GEMINI_TRANSLATE_MODELS,
         "atempo_lock": [ATEMPO_LOCK_MIN, ATEMPO_LOCK_MAX],
         "silence_trim_lock_ms": SILENCE_TRIM_LADDER_MS,
-        "email_enabled": bool(SMTP_HOST),
+        "email_enabled": bool(_email_provider()),
+        "email_provider": _email_provider() or None,
+        "keepalive_url": bool(PUBLIC_API_BASE),
         "ffmpeg": shutil.which(FFMPEG_BIN) is not None,
         "ffprobe": shutil.which(FFPROBE_BIN) is not None,
         "rubberband": await rubberband_available(),
